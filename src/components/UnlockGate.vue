@@ -7,6 +7,7 @@ const emit = defineEmits<{ unlocked: [] }>()
 
 const settings = useSettingsStore()
 const password = ref('')
+const cryptoPassword = ref('')
 const error = ref('')
 const busy = ref(false)
 const inputRef = ref<HTMLInputElement | null>(null)
@@ -18,21 +19,33 @@ onMounted(() => {
 async function submit() {
   if (busy.value) return
   error.value = ''
-  const pwd = password.value
-  if (!pwd) {
-    error.value = '请输入密码'
+
+  if (!password.value) {
+    error.value = '请输入启动密码'
     return
   }
+  if (settings.cryptoConfigured && !cryptoPassword.value) {
+    error.value = '请输入笔记加密密码'
+    return
+  }
+
   busy.value = true
   try {
-    const ok = await settings.unlock(pwd)
+    const ok = await settings.unlock(
+      password.value,
+      settings.cryptoConfigured ? cryptoPassword.value : undefined,
+    )
     if (!ok) {
-      error.value = '密码错误'
+      error.value = settings.cryptoConfigured
+        ? '启动密码或加密密码错误'
+        : '密码错误'
       password.value = ''
+      cryptoPassword.value = ''
       await nextTick(() => inputRef.value?.focus())
       return
     }
     password.value = ''
+    cryptoPassword.value = ''
     emit('unlocked')
   } catch (e) {
     error.value = errorMessage(e)
@@ -52,21 +65,41 @@ async function submit() {
           <h1>LAX TOOLS</h1>
         </div>
       </div>
-      <p class="muted">已启用密码锁，请输入密码后继续</p>
+
+      <p class="muted">
+        {{
+          settings.cryptoConfigured
+            ? '启动密码锁与笔记加密密码已分离，请分别输入。'
+            : '已启用启动密码锁，请输入密码后继续'
+        }}
+      </p>
+
       <label class="stack">
-        <span class="tech-label">Auth Key</span>
+        <span class="tech-label">启动密码</span>
         <input
           ref="inputRef"
           v-model="password"
           type="password"
           autocomplete="current-password"
-          placeholder="输入密码"
+          placeholder="启动密码锁"
           :disabled="busy"
         />
       </label>
+
+      <label v-if="settings.cryptoConfigured" class="stack">
+        <span class="tech-label">笔记加密密码</span>
+        <input
+          v-model="cryptoPassword"
+          type="password"
+          autocomplete="off"
+          placeholder="用于加解密笔记"
+          :disabled="busy"
+        />
+      </label>
+
       <p v-if="error" class="err">{{ error }}</p>
       <button type="submit" class="primary" :disabled="busy">解锁进入</button>
-      <p class="muted hint">忘记密码需手动清除应用配置中的密码锁字段</p>
+      <p class="muted hint">忘记密码需手动清除应用配置中的相关字段</p>
     </form>
   </div>
 </template>

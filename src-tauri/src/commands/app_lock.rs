@@ -46,22 +46,10 @@ pub fn app_lock_hash(password: String) -> AppResult<AppLockHash> {
     })
 }
 
-/// 校验密码是否匹配已存 salt/hash；成功时写入会话密码供 vault 加解密
+/// 校验密码是否匹配已存 salt/hash（仅校验，不写入加密会话）
 #[tauri::command]
-pub fn app_lock_verify(
-    password: String,
-    salt: String,
-    hash: String,
-    session: tauri::State<'_, SharedCryptoSession>,
-) -> AppResult<bool> {
-    let ok = verify_password(&password, &salt, &hash)?;
-    if ok {
-        let mut guard = session
-            .lock()
-            .map_err(|_| AppError::new("INTERNAL", "crypto session lock poisoned"))?;
-        guard.set_password(password);
-    }
-    Ok(ok)
+pub fn app_lock_verify(password: String, salt: String, hash: String) -> AppResult<bool> {
+    verify_password(&password, &salt, &hash)
 }
 
 fn verify_password(password: &str, salt: &str, hash: &str) -> AppResult<bool> {

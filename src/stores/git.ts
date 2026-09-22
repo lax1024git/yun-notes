@@ -20,14 +20,9 @@ export const useGitStore = defineStore('git', () => {
 
   async function ensureCryptoSession(): Promise<boolean> {
     const toast = useToastStore()
-    const settings = useSettingsStore()
-    if (!settings.lockEnabled) {
-      toast.error('请先在设置中启用应用锁（笔记磁盘为密文）')
-      return false
-    }
     const ready = await api.lock.sessionReady()
     if (!ready) {
-      toast.error('请先解锁应用锁')
+      toast.error('请先在设置中配置并解锁笔记加密密码')
       return false
     }
     return true

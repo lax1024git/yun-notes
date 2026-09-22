@@ -5,7 +5,6 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { api, errorMessage } from '../api/tauri'
 import type { FileNode } from '../types'
 import { debounce } from '../utils/debounce'
-import { useSettingsStore } from './settings'
 import { useToastStore } from './toast'
 
 const store = new LazyStore('settings.json')
@@ -71,8 +70,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function sealCopiedNotes() {
     if (!root.value) return
-    const settings = useSettingsStore()
-    if (!settings.lockEnabled || !(await api.lock.sessionReady())) return
+    if (!(await api.lock.sessionReady())) return
     try {
       const n = await api.fs.sealPlaintextNotes(root.value)
       if (n > 0) await refresh()
@@ -83,13 +81,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function openWorkspace(path: string) {
     const toast = useToastStore()
-    const settings = useSettingsStore()
     loading.value = true
     try {
       const paths = await api.project.init(path)
       root.value = paths.root
 
-      if (settings.lockEnabled && (await api.lock.sessionReady())) {
+      if (await api.lock.sessionReady()) {
         try {
           const n = await api.fs.sealPlaintextNotes(paths.root)
           if (n > 0) toast.info(`已加密 ${n} 个明文笔记`)

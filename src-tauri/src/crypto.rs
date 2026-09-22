@@ -1,5 +1,5 @@
-//! Vault file encryption: Argon2id key derivation + AES-256-GCM.
-//! Session holds the app-lock password in memory only (never persisted).
+//! Note file encryption: Argon2id key derivation + AES-256-GCM.
+//! Session holds the file-encryption password in memory (may differ from app unlock).
 
 use crate::error::{AppError, AppResult};
 use aes_gcm::aead::{Aead, KeyInit};
@@ -42,7 +42,7 @@ impl CryptoMeta {
 
 #[derive(Default)]
 pub struct CryptoSession {
-    /// App-lock password kept only for this process after unlock.
+    /// File-encryption password kept only for this process (may differ from app unlock).
     password: Option<String>,
 }
 
@@ -66,7 +66,7 @@ impl CryptoSession {
             .ok_or_else(|| {
                 AppError::new(
                     "LOCK_REQUIRED",
-                    "请先启用并解锁应用锁，才能加解密笔记",
+                    "请先设置并解锁笔记加密密码，才能加解密笔记",
                 )
             })
     }

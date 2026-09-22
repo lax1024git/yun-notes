@@ -22,6 +22,11 @@ const lockPwd2 = ref('')
 const lockCurrent = ref('')
 const lockBusy = ref(false)
 
+const cryptoCurrent = ref('')
+const cryptoPwd = ref('')
+const cryptoPwd2 = ref('')
+const cryptoBusy = ref(false)
+
 watch(
   () => [visible.value, settings.ready] as const,
   ([isOpen, ready]) => {
@@ -30,6 +35,9 @@ watch(
     lockPwd.value = ''
     lockPwd2.value = ''
     lockCurrent.value = ''
+    cryptoCurrent.value = ''
+    cryptoPwd.value = ''
+    cryptoPwd2.value = ''
   },
   { immediate: true },
 )
@@ -96,8 +104,8 @@ async function applyRemoteToWorkspace() {
     toast.error('请先打开工作区')
     return
   }
-  if (!settings.lockEnabled || !(await api.lock.sessionReady())) {
-    toast.error('请先启用并解锁应用锁')
+  if (!(await api.lock.sessionReady())) {
+    toast.error('请先解锁笔记加密密码')
     return
   }
   busy.value = true
@@ -123,8 +131,8 @@ async function cloneFromRemote() {
     toast.error('请填写完整 Git 地址')
     return
   }
-  if (!settings.lockEnabled || !(await api.lock.sessionReady())) {
-    toast.error('请先启用并解锁应用锁后再克隆')
+  if (!(await api.lock.sessionReady())) {
+    toast.error('请先解锁笔记加密密码后再克隆')
     return
   }
   const parent = await pickDirectory({ directory: true, multiple: false })
@@ -169,8 +177,8 @@ async function exportDecrypted() {
     toast.error('请先打开工作区')
     return
   }
-  if (!settings.lockEnabled || !(await api.lock.sessionReady())) {
-    toast.error('请先启用并解锁应用锁后再导出')
+  if (!(await api.lock.sessionReady())) {
+    toast.error('请先解锁笔记加密密码后再导出')
     return
   }
   const dest = await pickDirectory({
@@ -219,7 +227,7 @@ async function enableAppLock() {
 
 async function changeAppLock() {
   if (!lockCurrent.value) {
-    toast.error('请输入当前密码')
+    toast.error('请输入当前启动密码')
     return
   }
   if (lockPwd.value.length < 4) {
@@ -233,11 +241,16 @@ async function changeAppLock() {
   lockBusy.value = true
   try {
     const wsRoot = workspace.root
+    const shared = !settings.cryptoConfigured
     await settings.changeLockPassword(lockCurrent.value, lockPwd.value, wsRoot)
     lockCurrent.value = ''
     lockPwd.value = ''
     lockPwd2.value = ''
-    toast.success(wsRoot ? '密码已修改，笔记已用新密钥重加密' : '密码已修改')
+    toast.success(
+      shared && wsRoot
+        ? '启动密码已修改（仍与加密共用，笔记已重加密）'
+        : '启动密码已修改',
+    )
   } catch (e) {
     toast.error(errorMessage(e))
   } finally {
@@ -247,7 +260,7 @@ async function changeAppLock() {
 
 async function disableAppLock() {
   if (!lockCurrent.value) {
-    toast.error('请输入当前密码以关闭密码锁')
+    toast.error('请输入当前启动密码以关闭密码锁')
     return
   }
   lockBusy.value = true
@@ -256,11 +269,75 @@ async function disableAppLock() {
     lockCurrent.value = ''
     lockPwd.value = ''
     lockPwd2.value = ''
-    toast.success('已关闭密码锁')
+    toast.success(
+      settings.cryptoConfigured
+        ? '已关闭启动密码锁（笔记加密密码仍有效）'
+        : '已关闭启动密码锁',
+    )
   } catch (e) {
     toast.error(errorMessage(e))
   } finally {
     lockBusy.value = false
+  }
+}
+
+async function saveCryptoPassword() {
+  if (!cryptoCurrent.value) {
+    toast.error('请输入当前加密密码（未独立设置时即为启动密码）')
+    return
+  }
+  if (cryptoPwd.value.length < 4) {
+    toast.error('新加密密码至少 4 个字符')
+    return
+  }
+  if (cryptoPwd.value !== cryptoPwd2.value) {
+    toast.error('两次输入的新加密密码不一致')
+    return
+  }
+  cryptoBusy.value = true
+  try {
+    await settings.setCryptoPassword(
+      cryptoCurrent.value,
+      cryptoPwd.value,
+      workspace.root,
+    )
+    cryptoCurrent.value = ''
+    cryptoPwd.value = ''
+    cryptoPwd2.value = ''
+    toast.success(
+      workspace.root
+        ? '加密密码已独立设置，笔记已用新密钥重加密'
+        : '加密密码已独立设置',
+    )
+  } catch (e) {
+    toast.error(errorMessage(e))
+  } finally {
+    cryptoBusy.value = false
+  }
+}
+
+async function rebindCryptoToUnlock() {
+  if (!lockCurrent.value && !cryptoCurrent.value) {
+    toast.error('请输入启动密码以恢复共用')
+    return
+  }
+  const pwd = lockCurrent.value || cryptoCurrent.value
+  cryptoBusy.value = true
+  try {
+    await settings.bindCryptoToUnlock(pwd, workspace.root)
+    lockCurrent.value = ''
+    cryptoCurrent.value = ''
+    cryptoPwd.value = ''
+    cryptoPwd2.value = ''
+    toast.success(
+      workspace.root
+        ? '已改回与启动密码共用，笔记已重加密'
+        : '已改回与启动密码共用',
+    )
+  } catch (e) {
+    toast.error(errorMessage(e))
+  } finally {
+    cryptoBusy.value = false
   }
 }
 </script>
@@ -289,11 +366,11 @@ async function disableAppLock() {
         <section class="stack section">
           <h3>启动密码锁</h3>
           <p class="muted tip">
-            启用后每次启动需输入密码，并用于加解密磁盘上的笔记。关闭或修改需验证当前密码；忘记密码需手动清除应用配置。
+            仅用于启动时进入应用，与笔记加密密码可分开。未单独设置加密密码时，启动密码仍会兼作加密密码。
           </p>
           <template v-if="!settings.lockEnabled">
             <label class="stack">
-              <span class="muted">设置密码</span>
+              <span class="muted">设置启动密码</span>
               <input v-model="lockPwd" type="password" autocomplete="new-password" />
             </label>
             <label class="stack">
@@ -306,21 +383,21 @@ async function disableAppLock() {
               :disabled="lockBusy || !lockPwd || !lockPwd2"
               @click="enableAppLock"
             >
-              启用密码锁
+              启用启动密码锁
             </button>
           </template>
           <template v-else>
             <p class="muted status">状态：已启用</p>
             <label class="stack">
-              <span class="muted">当前密码</span>
+              <span class="muted">当前启动密码</span>
               <input v-model="lockCurrent" type="password" autocomplete="current-password" />
             </label>
             <label class="stack">
-              <span class="muted">新密码（修改时填写）</span>
+              <span class="muted">新启动密码（修改时填写）</span>
               <input v-model="lockPwd" type="password" autocomplete="new-password" />
             </label>
             <label class="stack">
-              <span class="muted">确认新密码</span>
+              <span class="muted">确认新启动密码</span>
               <input v-model="lockPwd2" type="password" autocomplete="new-password" />
             </label>
             <div class="row wrap">
@@ -330,13 +407,54 @@ async function disableAppLock() {
                 :disabled="lockBusy || !lockCurrent || !lockPwd || !lockPwd2"
                 @click="changeAppLock"
               >
-                修改密码
+                修改启动密码
               </button>
               <button type="button" :disabled="lockBusy || !lockCurrent" @click="disableAppLock">
-                关闭密码锁
+                关闭启动锁
               </button>
             </div>
           </template>
+        </section>
+
+        <section class="stack section">
+          <h3>笔记加密密码</h3>
+          <p class="muted tip">
+            用于磁盘笔记加解密。当前：
+            <strong>{{
+              settings.cryptoConfigured ? '已独立于启动密码' : '与启动密码共用'
+            }}</strong>
+            。独立设置后，修改启动密码不会改笔记密钥。
+          </p>
+          <label class="stack">
+            <span class="muted">当前加密密码（共用时填启动密码）</span>
+            <input v-model="cryptoCurrent" type="password" autocomplete="off" />
+          </label>
+          <label class="stack">
+            <span class="muted">新加密密码</span>
+            <input v-model="cryptoPwd" type="password" autocomplete="new-password" />
+          </label>
+          <label class="stack">
+            <span class="muted">确认新加密密码</span>
+            <input v-model="cryptoPwd2" type="password" autocomplete="new-password" />
+          </label>
+          <div class="row wrap">
+            <button
+              type="button"
+              class="primary"
+              :disabled="cryptoBusy || !cryptoCurrent || !cryptoPwd || !cryptoPwd2"
+              @click="saveCryptoPassword"
+            >
+              {{ settings.cryptoConfigured ? '修改加密密码' : '设置为独立加密密码' }}
+            </button>
+            <button
+              v-if="settings.cryptoConfigured && settings.lockEnabled"
+              type="button"
+              :disabled="cryptoBusy || !(lockCurrent || cryptoCurrent)"
+              @click="rebindCryptoToUnlock"
+            >
+              改回与启动密码共用
+            </button>
+          </div>
         </section>
 
         <section class="stack section">

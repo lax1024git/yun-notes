@@ -68,8 +68,8 @@ async function exportDecrypted() {
     toast.error('请先打开工作区')
     return
   }
-  if (!settings.lockEnabled || !(await api.lock.sessionReady())) {
-    toast.error('请先启用并解锁应用锁后再导出')
+  if (!(await api.lock.sessionReady())) {
+    toast.error('请先解锁笔记加密密码后再导出')
     return
   }
   const dest = await pickDirectory({
