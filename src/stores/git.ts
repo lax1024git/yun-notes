@@ -92,7 +92,7 @@ export const useGitStore = defineStore('git', () => {
       toast.success('推送成功（密文）')
       try {
         const { sendNotification } = await import('@tauri-apps/plugin-notification')
-        await sendNotification({ title: 'Note Workstation', body: 'Git 推送完成' })
+        await sendNotification({ title: 'Lax Tools', body: 'Git 推送完成' })
       } catch {
         /* ignore */
       }
@@ -105,7 +105,7 @@ export const useGitStore = defineStore('git', () => {
       ) {
         try {
           const { sendNotification } = await import('@tauri-apps/plugin-notification')
-          await sendNotification({ title: 'Note Workstation', body: '检测到 Git 冲突' })
+          await sendNotification({ title: 'Lax Tools', body: '检测到 Git 冲突' })
         } catch {
           /* ignore */
         }
@@ -125,7 +125,7 @@ export const useGitStore = defineStore('git', () => {
       toast.success('拉取成功（密文已同步，打开时解密显示）')
       try {
         const { sendNotification } = await import('@tauri-apps/plugin-notification')
-        await sendNotification({ title: 'Note Workstation', body: 'Git 拉取完成' })
+        await sendNotification({ title: 'Lax Tools', body: 'Git 拉取完成' })
       } catch {
         /* ignore */
       }

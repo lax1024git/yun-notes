@@ -1,8 +1,8 @@
 [package]
 name = "note-workstation"
 version = "0.1.0"
-description = "Local-first Markdown note workstation with Git and Gitee"
-authors = ["Note Workstation"]
+description = "Lax Tools — local notes, Git sync, and utility toolbox"
+authors = ["Lax Tools"]
 edition = "2021"
 
 [lib]

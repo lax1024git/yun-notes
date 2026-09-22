@@ -355,17 +355,17 @@ provideTreeDragApi(dragApi)
 <template>
   <div class="file-tree stack">
     <div class="row head" @contextmenu="onRootContextMenu">
-      <strong :title="workspace.root || undefined">{{ workspace.rootName || '工作区' }}</strong>
+      <strong class="root-name" :title="workspace.root || undefined">{{
+        workspace.rootName || '未选择目录'
+      }}</strong>
       <button type="button" @click="pickWorkspace">打开</button>
       <button type="button" :disabled="!workspace.root" @click="newFile">新建文件</button>
       <button type="button" :disabled="!workspace.root" @click="newDir">新建目录</button>
     </div>
-    <p v-if="!workspace.root" class="muted">
-      请选择笔记目录（磁盘存密文，编辑器打开时解密显示）
+    <p v-if="!workspace.root" class="muted hint">
+      选择笔记目录 · 磁盘密文 · 编辑器解密显示
     </p>
-    <p v-else class="muted hint">
-      磁盘密文 · 打开解密显示 · 右键可新建文件/目录
-    </p>
+    <p v-else class="muted hint">ENC ON DISK · 右键新建 · 拖拽移动</p>
 
     <div
       v-if="workspace.root"
@@ -431,30 +431,46 @@ provideTreeDragApi(dragApi)
 .head {
   flex-wrap: wrap;
   margin-bottom: 0.35rem;
+  gap: 0.35rem;
 }
-.head strong {
+.head .root-name {
   margin-right: auto;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  letter-spacing: 0.02em;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.head button {
+  font-size: 0.78rem;
+  padding: 0.28rem 0.5rem;
 }
 .hint {
-  font-size: 0.75rem;
-  margin: 0 0 0.35rem;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  margin: 0 0 0.4rem;
 }
 .tree-body {
   min-height: 140px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 0.25rem;
   border: 1px dashed transparent;
+  flex: 1;
 }
 .tree-body.dragging {
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 .tree-body.root-drop {
-  outline: 2px dashed var(--accent);
+  outline: 1px dashed var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .empty {
   padding: 1rem 0.5rem;
   font-size: 0.8rem;
+  font-family: var(--font-mono);
 }
 </style>
 
@@ -484,12 +500,12 @@ body.nw-tree-dragging * {
 .ctx-menu {
   position: fixed;
   z-index: 1000;
-  min-width: 132px;
+  min-width: 140px;
   padding: 0.3rem;
-  border-radius: 8px;
+  border-radius: var(--radius);
   border: 1px solid var(--border);
   background: var(--bg-elevated);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+  box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
@@ -499,10 +515,11 @@ body.nw-tree-dragging * {
   text-align: left;
   border: none;
   background: transparent;
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 0.45rem 0.65rem;
   cursor: pointer;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
+  font-family: var(--font-mono);
 }
 .ctx-menu button:hover {
   background: var(--accent-soft);

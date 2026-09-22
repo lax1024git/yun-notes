@@ -32,9 +32,10 @@ async function openHit(hit: SearchHit) {
 <template>
   <div class="search stack">
     <div class="row">
+      <span class="tech-label prefix">FIND</span>
       <input
         v-model="keyword"
-        placeholder="全文搜索…"
+        placeholder="全文搜索关键词…"
         :disabled="!workspace.root"
         @keydown.enter="search"
       />
@@ -45,12 +46,19 @@ async function openHit(hit: SearchHit) {
         <div class="path">{{ hit.path }}:{{ hit.line }}</div>
         <div class="preview">{{ hit.preview }}</div>
       </li>
-      <li v-if="!hits.length" class="muted">无结果</li>
+      <li v-if="!hits.length" class="muted empty">NO RESULTS</li>
     </ul>
   </div>
 </template>
 
 <style scoped>
+.row {
+  gap: 0.45rem;
+}
+.prefix {
+  flex-shrink: 0;
+  color: var(--accent);
+}
 .hits {
   list-style: none;
   margin: 0;
@@ -59,22 +67,33 @@ async function openHit(hit: SearchHit) {
   overflow: auto;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
 }
 .hits li {
   padding: 0.45rem 0.6rem;
   border-bottom: 1px solid var(--border);
   cursor: pointer;
 }
+.hits li:last-child {
+  border-bottom: none;
+}
 .hits li:hover {
   background: var(--accent-soft);
 }
 .path {
-  font-size: 0.78rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
   color: var(--accent);
 }
 .preview {
   font-size: 0.82rem;
   color: var(--muted);
+}
+.empty {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  cursor: default;
 }
 </style>

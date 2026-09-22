@@ -161,7 +161,10 @@ fillNow()
   gap: 0.3rem;
 }
 .field span {
-  font-size: 0.8rem;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 .row {
   display: flex;

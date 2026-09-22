@@ -46,7 +46,7 @@ fn is_hidden_name(name: &str) -> bool {
     name.starts_with('.')
 }
 
-/// Detect Note Workstation ciphertext (magic `NW1`).
+/// Detect Lax Tools ciphertext (magic `NW1`).
 pub fn is_encrypted_bytes(data: &[u8]) -> bool {
     data.len() >= 3 && &data[..3] == b"NW1"
 }

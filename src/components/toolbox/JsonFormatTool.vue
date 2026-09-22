@@ -119,7 +119,7 @@ async function onCopy() {
   line-height: 1.45;
   padding: 0.65rem 0.75rem;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--editor-bg);
   outline: none;
 }

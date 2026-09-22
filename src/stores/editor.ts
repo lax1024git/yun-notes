@@ -40,7 +40,7 @@ export const useEditorStore = defineStore('editor', () => {
       toast.error(`保存失败: ${errorMessage(e)}`)
       try {
         const { sendNotification } = await import('@tauri-apps/plugin-notification')
-        await sendNotification({ title: 'Note Workstation', body: '自动保存失败' })
+        await sendNotification({ title: 'Lax Tools', body: '自动保存失败' })
       } catch {
         /* ignore */
       }

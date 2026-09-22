@@ -125,18 +125,41 @@ async function exportDecrypted() {
 
 <style scoped>
 .search-bar {
-  padding: 0.55rem 0.75rem 0;
+  padding: 0.65rem 0.85rem 0;
 }
 .editors {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: grid;
-  margin: 0.55rem 0.75rem 0.75rem;
+  margin: 0.65rem 0.85rem 0.85rem;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
   background: var(--bg-elevated);
   box-shadow: var(--shadow);
+}
+.editors::before,
+.editors::after {
+  content: '';
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  z-index: 2;
+  pointer-events: none;
+  border-color: var(--accent);
+  border-style: solid;
+  opacity: 0.7;
+}
+.editors::before {
+  top: 0;
+  left: 0;
+  border-width: 2px 0 0 2px;
+}
+.editors::after {
+  right: 0;
+  bottom: 0;
+  border-width: 0 2px 2px 0;
 }
 .editors.split {
   grid-template-columns: 1fr 1fr;
@@ -144,5 +167,8 @@ async function exportDecrypted() {
 .editors.edit,
 .editors.preview {
   grid-template-columns: 1fr;
+}
+.editors.split > :first-child {
+  border-right: 1px solid var(--border);
 }
 </style>
