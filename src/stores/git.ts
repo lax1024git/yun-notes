@@ -20,9 +20,14 @@ export const useGitStore = defineStore('git', () => {
 
   async function ensureCryptoSession(): Promise<boolean> {
     const toast = useToastStore()
+    const workspace = useWorkspaceStore()
+    if (!workspace.activeTabCryptoReady) {
+      toast.error('请先解锁当前工作区的笔记加密密码')
+      return false
+    }
     const ready = await api.lock.sessionReady()
     if (!ready) {
-      toast.error('请先在设置中配置并解锁笔记加密密码')
+      toast.error('请先在工作区设置中配置并解锁笔记加密密码')
       return false
     }
     return true
@@ -87,7 +92,7 @@ export const useGitStore = defineStore('git', () => {
       toast.success('推送成功（密文）')
       try {
         const { sendNotification } = await import('@tauri-apps/plugin-notification')
-        await sendNotification({ title: 'Lax Tools', body: 'Git 推送完成' })
+        await sendNotification({ title: 'Lax1024 Tools', body: 'Git 推送完成' })
       } catch {
         /* ignore */
       }
@@ -100,7 +105,7 @@ export const useGitStore = defineStore('git', () => {
       ) {
         try {
           const { sendNotification } = await import('@tauri-apps/plugin-notification')
-          await sendNotification({ title: 'Lax Tools', body: '检测到 Git 冲突' })
+          await sendNotification({ title: 'Lax1024 Tools', body: '检测到 Git 冲突' })
         } catch {
           /* ignore */
         }
@@ -120,7 +125,7 @@ export const useGitStore = defineStore('git', () => {
       toast.success('拉取成功（密文已同步，打开时解密显示）')
       try {
         const { sendNotification } = await import('@tauri-apps/plugin-notification')
-        await sendNotification({ title: 'Lax Tools', body: 'Git 拉取完成' })
+        await sendNotification({ title: 'Lax1024 Tools', body: 'Git 拉取完成' })
       } catch {
         /* ignore */
       }

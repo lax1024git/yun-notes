@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref } from 'vue'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { errorMessage } from '../api/tauri'
 import { useSettingsStore } from '../stores/settings'
+import { useWorkspaceStore } from '../stores/workspace'
 
 const emit = defineEmits<{ unlocked: [] }>()
 
 const settings = useSettingsStore()
+const workspace = useWorkspaceStore()
 const password = ref('')
-const cryptoPassword = ref('')
 const error = ref('')
 const busy = ref(false)
 const inputRef = ref<HTMLInputElement | null>(null)
@@ -15,6 +17,15 @@ const inputRef = ref<HTMLInputElement | null>(null)
 onMounted(() => {
   void nextTick(() => inputRef.value?.focus())
 })
+
+async function onClose() {
+  if (busy.value) return
+  try {
+    await getCurrentWindow().close()
+  } catch {
+    /* ignore */
+  }
+}
 
 async function submit() {
   if (busy.value) return
@@ -24,28 +35,19 @@ async function submit() {
     error.value = '请输入启动密码'
     return
   }
-  if (settings.cryptoConfigured && !cryptoPassword.value) {
-    error.value = '请输入笔记加密密码'
-    return
-  }
 
   busy.value = true
   try {
-    const ok = await settings.unlock(
-      password.value,
-      settings.cryptoConfigured ? cryptoPassword.value : undefined,
-    )
+    const ok = await settings.unlock(password.value)
     if (!ok) {
-      error.value = settings.cryptoConfigured
-        ? '启动密码或加密密码错误'
-        : '密码错误'
+      error.value = '密码错误'
       password.value = ''
-      cryptoPassword.value = ''
       await nextTick(() => inputRef.value?.focus())
       return
     }
+    await workspace.loadTabs()
+    await workspace.seedSharedCryptoFromUnlock(password.value)
     password.value = ''
-    cryptoPassword.value = ''
     emit('unlocked')
   } catch (e) {
     error.value = errorMessage(e)
@@ -60,19 +62,16 @@ async function submit() {
     <form class="card stack" @submit.prevent="submit">
       <div class="card-top">
         <span class="mark" aria-hidden="true" />
-        <div>
+        <div class="grow">
           <div class="eyebrow">SECURE ACCESS</div>
-          <h1>LAX TOOLS</h1>
+          <h1>LAX1024 TOOLS</h1>
         </div>
+        <button type="button" class="icon-close" aria-label="关闭" :disabled="busy" @click="onClose">
+          ×
+        </button>
       </div>
 
-      <p class="muted">
-        {{
-          settings.cryptoConfigured
-            ? '启动密码锁与笔记加密密码已分离，请分别输入。'
-            : '已启用启动密码锁，请输入密码后继续'
-        }}
-      </p>
+      <p class="muted">已启用启动密码锁。笔记加密密码与启动锁分开，在各工作区 Tab 中单独设置。</p>
 
       <label class="stack">
         <span class="tech-label">启动密码</span>
@@ -86,19 +85,11 @@ async function submit() {
         />
       </label>
 
-      <label v-if="settings.cryptoConfigured" class="stack">
-        <span class="tech-label">笔记加密密码</span>
-        <input
-          v-model="cryptoPassword"
-          type="password"
-          autocomplete="off"
-          placeholder="用于加解密笔记"
-          :disabled="busy"
-        />
-      </label>
-
       <p v-if="error" class="err">{{ error }}</p>
-      <button type="submit" class="primary" :disabled="busy">解锁进入</button>
+      <div class="row wrap">
+        <button type="submit" class="primary" :disabled="busy">解锁进入</button>
+        <button type="button" :disabled="busy" @click="onClose">关闭</button>
+      </div>
       <p class="muted hint">忘记密码需手动清除应用配置中的相关字段</p>
     </form>
   </div>
@@ -144,6 +135,21 @@ async function submit() {
   align-items: center;
   gap: 0.7rem;
 }
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+.icon-close {
+  border: none;
+  background: transparent;
+  font-size: 1.4rem;
+  line-height: 1;
+  padding: 0.15rem 0.45rem;
+  color: var(--muted);
+}
+.icon-close:hover {
+  color: var(--text);
+}
 .mark {
   width: 12px;
   height: 12px;
@@ -171,5 +177,8 @@ h1 {
 .hint {
   font-size: 0.75rem;
   margin: 0;
+}
+.wrap {
+  flex-wrap: wrap;
 }
 </style>

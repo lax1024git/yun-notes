@@ -1,8 +1,8 @@
 [package]
 name = "note-workstation"
 version = "0.1.0"
-description = "Lax Tools — local notes, Git sync, and utility toolbox"
-authors = ["Lax Tools"]
+description = "Lax1024 Tools — local notes, Git sync, and utility toolbox"
+authors = ["Lax1024 Tools"]
 edition = "2021"
 
 [lib]

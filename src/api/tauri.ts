@@ -29,8 +29,8 @@ export const api = {
       invoke<SearchHit[]>('search_files', { root, keyword }),
     sealPlaintextNotes: (root: string) =>
       invoke<number>('seal_plaintext_notes', { root }),
-    exportDecrypted: (root: string, destRoot: string) =>
-      invoke<number>('export_decrypted', { root, destRoot }),
+    exportDecrypted: (root: string, destRoot: string, path?: string | null) =>
+      invoke<number>('export_decrypted', { root, destRoot, path: path ?? null }),
   },
   project: {
     ensure: (root: string) => invoke<ProjectPaths>('project_ensure', { root }),

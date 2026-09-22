@@ -9,7 +9,9 @@ import MarkdownPreview from './components/MarkdownPreview.vue'
 import SearchPanel from './components/SearchPanel.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import UnlockGate from './components/UnlockGate.vue'
+import TabCryptoUnlock from './components/TabCryptoUnlock.vue'
 import Toast from './components/Toast.vue'
+import WorkspaceTabs from './components/WorkspaceTabs.vue'
 import { api, errorMessage } from './api/tauri'
 import { useEditorStore } from './stores/editor'
 import { useSettingsStore } from './stores/settings'
@@ -68,8 +70,8 @@ async function exportDecrypted() {
     toast.error('请先打开工作区')
     return
   }
-  if (!(await api.lock.sessionReady())) {
-    toast.error('请先解锁笔记加密密码后再导出')
+  if (!(await api.lock.sessionReady()) || !workspace.activeTabCryptoReady) {
+    toast.error('请先解锁当前工作区的笔记加密密码后再导出')
     return
   }
   const dest = await pickDirectory({
@@ -93,6 +95,7 @@ async function exportDecrypted() {
 <template>
   <UnlockGate v-if="settings.needsUnlock" @unlocked="onUnlocked" />
   <div v-else class="app-shell">
+    <TabCryptoUnlock />
     <AppToolbar>
       <template #actions>
         <button
@@ -105,6 +108,7 @@ async function exportDecrypted() {
         <button @click="settingsOpen = true">设置</button>
       </template>
     </AppToolbar>
+    <WorkspaceTabs />
     <div class="app-body">
       <AppSidebar />
       <main class="main-pane">

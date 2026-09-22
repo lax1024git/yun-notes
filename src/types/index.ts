@@ -61,3 +61,21 @@ export interface GiteeRepo {
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 export type EditorMode = 'edit' | 'split' | 'preview'
+
+/** One entry in the multi-workspace tab bar */
+export interface WorkspaceTab {
+  id: string
+  /** Display name on the tab (user-editable) */
+  name: string
+  /** Local workspace root path */
+  path: string
+  /** Full git remote URL (may include token) */
+  remoteUrl: string
+  /**
+   * Per-tab note encryption password verify (SHA-256 salt/hash).
+   * When set, this tab uses its own crypto password independent of other tabs.
+   */
+  cryptoSalt?: string
+  cryptoHash?: string
+}
+

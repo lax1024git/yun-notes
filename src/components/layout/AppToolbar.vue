@@ -7,7 +7,7 @@ import QuickToolbox from '../toolbox/QuickToolbox.vue'
 const editor = useEditorStore()
 const workspace = useWorkspaceStore()
 
-const title = computed(() => 'LAX TOOLS')
+const title = computed(() => 'LAX1024 TOOLS')
 const pathLabel = computed(() => workspace.currentFile ?? 'NO FILE SELECTED')
 const dirty = computed(() => workspace.dirty)
 

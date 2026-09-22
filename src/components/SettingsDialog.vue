@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 import { open as pickDirectory } from '@tauri-apps/plugin-dialog'
-import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import { api, errorMessage } from '../api/tauri'
 import type { ThemeMode } from '../types'
 import { useSettingsStore } from '../stores/settings'
@@ -14,7 +13,6 @@ const settings = useSettingsStore()
 const toast = useToastStore()
 const workspace = useWorkspaceStore()
 
-const remoteUrl = ref('')
 const busy = ref(false)
 
 const lockPwd = ref('')
@@ -22,154 +20,19 @@ const lockPwd2 = ref('')
 const lockCurrent = ref('')
 const lockBusy = ref(false)
 
-const cryptoCurrent = ref('')
-const cryptoPwd = ref('')
-const cryptoPwd2 = ref('')
-const cryptoBusy = ref(false)
-
 watch(
   () => [visible.value, settings.ready] as const,
   ([isOpen, ready]) => {
     if (!isOpen || !ready) return
-    remoteUrl.value = settings.remoteUrl
     lockPwd.value = ''
     lockPwd2.value = ''
     lockCurrent.value = ''
-    cryptoCurrent.value = ''
-    cryptoPwd.value = ''
-    cryptoPwd2.value = ''
   },
   { immediate: true },
 )
 
-const maskedRemote = computed(() =>
-  remoteUrl.value
-    .replace(/oauth2:[^@/]+@/i, 'oauth2:****@')
-    .replace(/\/\/([^/@]+)@/, '//****@'),
-)
-
-function extractTokenFromUrl(url: string): string | null {
-  const m = url.match(/https?:\/\/(?:oauth2:)?([^@/]+)@/i)
-  return m?.[1] || null
-}
-
-function leafNameFromUrl(url: string): string {
-  return (
-    url
-      .replace(/\.git$/i, '')
-      .split('/')
-      .filter(Boolean)
-      .pop()
-      ?.replace(/.*@/, '') || 'notes'
-  )
-}
-
 function onTheme(e: Event) {
   void settings.setTheme((e.target as HTMLSelectElement).value as ThemeMode)
-}
-
-async function persistRemote() {
-  const url = remoteUrl.value.trim()
-  await settings.saveRemoteUrl(url)
-  const tok = extractTokenFromUrl(url)
-  if (tok) await settings.saveToken(tok)
-}
-
-async function loadCurrentOrigin() {
-  if (!workspace.root) {
-    toast.error('请先打开工作区')
-    return
-  }
-  try {
-    const url = await api.git.getRemote(workspace.root)
-    if (url) {
-      remoteUrl.value = url
-      await persistRemote()
-      toast.success('已读取当前 origin')
-    } else {
-      toast.info('当前仓库尚未设置 origin')
-    }
-  } catch (e) {
-    toast.error(errorMessage(e))
-  }
-}
-
-async function applyRemoteToWorkspace() {
-  const url = remoteUrl.value.trim()
-  if (!url) {
-    toast.error('请填写完整 Git 地址')
-    return
-  }
-  if (!workspace.root) {
-    toast.error('请先打开工作区')
-    return
-  }
-  if (!(await api.lock.sessionReady())) {
-    toast.error('请先解锁笔记加密密码')
-    return
-  }
-  busy.value = true
-  try {
-    try {
-      await api.git.status(workspace.root)
-    } catch {
-      await api.git.init(workspace.root)
-    }
-    await api.git.setRemote(workspace.root, url)
-    await persistRemote()
-    toast.success(`已设为 origin：${maskedRemote.value}`)
-  } catch (e) {
-    toast.error(errorMessage(e))
-  } finally {
-    busy.value = false
-  }
-}
-
-async function cloneFromRemote() {
-  const url = remoteUrl.value.trim()
-  if (!url) {
-    toast.error('请填写完整 Git 地址')
-    return
-  }
-  if (!(await api.lock.sessionReady())) {
-    toast.error('请先解锁笔记加密密码后再克隆')
-    return
-  }
-  const parent = await pickDirectory({ directory: true, multiple: false })
-  if (typeof parent !== 'string') return
-  const leaf = leafNameFromUrl(url)
-  const dest =
-    parent.endsWith('\\') || parent.endsWith('/')
-      ? `${parent}${leaf}`
-      : `${parent}\\${leaf}`
-  busy.value = true
-  try {
-    await api.git.clone(url, dest)
-    await persistRemote()
-    toast.success('克隆完成（密文仓库，打开笔记时解密）')
-    if (window.confirm('是否打开为当前工作区？')) {
-      await workspace.openWorkspace(dest)
-    }
-  } catch (e) {
-    toast.error(errorMessage(e))
-  } finally {
-    busy.value = false
-  }
-}
-
-async function copyRemote() {
-  const url = remoteUrl.value.trim()
-  if (!url) {
-    toast.error('没有可复制的地址')
-    return
-  }
-  await persistRemote()
-  try {
-    await writeText(url)
-    toast.success(`已复制：${maskedRemote.value}`)
-  } catch (e) {
-    toast.error(errorMessage(e))
-  }
 }
 
 async function exportDecrypted() {
@@ -177,8 +40,8 @@ async function exportDecrypted() {
     toast.error('请先打开工作区')
     return
   }
-  if (!(await api.lock.sessionReady())) {
-    toast.error('请先解锁笔记加密密码后再导出')
+  if (!workspace.activeTabCryptoReady || !(await api.lock.sessionReady())) {
+    toast.error('请先解锁当前工作区的笔记加密密码后再导出')
     return
   }
   const dest = await pickDirectory({
@@ -200,7 +63,6 @@ async function exportDecrypted() {
 
 function onClose() {
   visible.value = false
-  void persistRemote().catch((e) => toast.error(errorMessage(e)))
 }
 
 async function enableAppLock() {
@@ -217,7 +79,7 @@ async function enableAppLock() {
     await settings.enableLock(lockPwd.value)
     lockPwd.value = ''
     lockPwd2.value = ''
-    toast.success('已启用密码锁')
+    toast.success('已启用启动密码锁')
   } catch (e) {
     toast.error(errorMessage(e))
   } finally {
@@ -240,17 +102,11 @@ async function changeAppLock() {
   }
   lockBusy.value = true
   try {
-    const wsRoot = workspace.root
-    const shared = !settings.cryptoConfigured
-    await settings.changeLockPassword(lockCurrent.value, lockPwd.value, wsRoot)
+    await settings.changeLockPassword(lockCurrent.value, lockPwd.value)
     lockCurrent.value = ''
     lockPwd.value = ''
     lockPwd2.value = ''
-    toast.success(
-      shared && wsRoot
-        ? '启动密码已修改（仍与加密共用，笔记已重加密）'
-        : '启动密码已修改',
-    )
+    toast.success('启动密码已修改')
   } catch (e) {
     toast.error(errorMessage(e))
   } finally {
@@ -269,75 +125,11 @@ async function disableAppLock() {
     lockCurrent.value = ''
     lockPwd.value = ''
     lockPwd2.value = ''
-    toast.success(
-      settings.cryptoConfigured
-        ? '已关闭启动密码锁（笔记加密密码仍有效）'
-        : '已关闭启动密码锁',
-    )
+    toast.success('已关闭启动密码锁')
   } catch (e) {
     toast.error(errorMessage(e))
   } finally {
     lockBusy.value = false
-  }
-}
-
-async function saveCryptoPassword() {
-  if (!cryptoCurrent.value) {
-    toast.error('请输入当前加密密码（未独立设置时即为启动密码）')
-    return
-  }
-  if (cryptoPwd.value.length < 4) {
-    toast.error('新加密密码至少 4 个字符')
-    return
-  }
-  if (cryptoPwd.value !== cryptoPwd2.value) {
-    toast.error('两次输入的新加密密码不一致')
-    return
-  }
-  cryptoBusy.value = true
-  try {
-    await settings.setCryptoPassword(
-      cryptoCurrent.value,
-      cryptoPwd.value,
-      workspace.root,
-    )
-    cryptoCurrent.value = ''
-    cryptoPwd.value = ''
-    cryptoPwd2.value = ''
-    toast.success(
-      workspace.root
-        ? '加密密码已独立设置，笔记已用新密钥重加密'
-        : '加密密码已独立设置',
-    )
-  } catch (e) {
-    toast.error(errorMessage(e))
-  } finally {
-    cryptoBusy.value = false
-  }
-}
-
-async function rebindCryptoToUnlock() {
-  if (!lockCurrent.value && !cryptoCurrent.value) {
-    toast.error('请输入启动密码以恢复共用')
-    return
-  }
-  const pwd = lockCurrent.value || cryptoCurrent.value
-  cryptoBusy.value = true
-  try {
-    await settings.bindCryptoToUnlock(pwd, workspace.root)
-    lockCurrent.value = ''
-    cryptoCurrent.value = ''
-    cryptoPwd.value = ''
-    cryptoPwd2.value = ''
-    toast.success(
-      workspace.root
-        ? '已改回与启动密码共用，笔记已重加密'
-        : '已改回与启动密码共用',
-    )
-  } catch (e) {
-    toast.error(errorMessage(e))
-  } finally {
-    cryptoBusy.value = false
   }
 }
 </script>
@@ -366,7 +158,7 @@ async function rebindCryptoToUnlock() {
         <section class="stack section">
           <h3>启动密码锁</h3>
           <p class="muted tip">
-            仅用于启动时进入应用，与笔记加密密码可分开。未单独设置加密密码时，启动密码仍会兼作加密密码。
+            仅用于启动时进入应用，与笔记文件加密无关。每个工作区的加密密码请在 Tab「工作区设置」中单独配置。
           </p>
           <template v-if="!settings.lockEnabled">
             <label class="stack">
@@ -417,50 +209,17 @@ async function rebindCryptoToUnlock() {
         </section>
 
         <section class="stack section">
-          <h3>笔记加密密码</h3>
+          <h3>笔记加密</h3>
           <p class="muted tip">
-            用于磁盘笔记加解密。当前：
-            <strong>{{
-              settings.cryptoConfigured ? '已独立于启动密码' : '与启动密码共用'
-            }}</strong>
-            。独立设置后，修改启动密码不会改笔记密钥。
+            文件加密密码按工作区 Tab 独立设置，无全局加密密码。点击顶部 Tab 右侧
+            <strong>···</strong> 打开「工作区设置」进行配置。
           </p>
-          <label class="stack">
-            <span class="muted">当前加密密码（共用时填启动密码）</span>
-            <input v-model="cryptoCurrent" type="password" autocomplete="off" />
-          </label>
-          <label class="stack">
-            <span class="muted">新加密密码</span>
-            <input v-model="cryptoPwd" type="password" autocomplete="new-password" />
-          </label>
-          <label class="stack">
-            <span class="muted">确认新加密密码</span>
-            <input v-model="cryptoPwd2" type="password" autocomplete="new-password" />
-          </label>
-          <div class="row wrap">
-            <button
-              type="button"
-              class="primary"
-              :disabled="cryptoBusy || !cryptoCurrent || !cryptoPwd || !cryptoPwd2"
-              @click="saveCryptoPassword"
-            >
-              {{ settings.cryptoConfigured ? '修改加密密码' : '设置为独立加密密码' }}
-            </button>
-            <button
-              v-if="settings.cryptoConfigured && settings.lockEnabled"
-              type="button"
-              :disabled="cryptoBusy || !(lockCurrent || cryptoCurrent)"
-              @click="rebindCryptoToUnlock"
-            >
-              改回与启动密码共用
-            </button>
-          </div>
         </section>
 
         <section class="stack section">
           <h3>导出明文</h3>
           <p class="muted tip">
-            将工作区笔记解密后导出到指定目录（保留相对路径；非笔记文件原样复制）。
+            将当前工作区笔记解密后导出到指定目录（保留相对路径；非笔记文件原样复制）。
           </p>
           <button
             type="button"
@@ -475,41 +234,9 @@ async function rebindCryptoToUnlock() {
         <section class="stack section">
           <h3>Git 远程</h3>
           <p class="muted tip">
-            填写完整地址即可，例如
-            <code>https://oauth2:&lt;TOKEN&gt;@gitee.com/owner/repo.git</code>
+            每个工作区可单独配置 Git 地址。请点击顶部工作区 Tab 右侧的
+            <strong>···</strong> 打开「工作区设置」。
           </p>
-          <label class="stack">
-            <span class="muted">完整仓库地址</span>
-            <input
-              v-model="remoteUrl"
-              type="password"
-              placeholder="https://oauth2:&lt;TOKEN&gt;@gitee.com/owner/repo.git"
-              autocomplete="off"
-              spellcheck="false"
-            />
-            <p v-if="remoteUrl" class="muted preview">{{ maskedRemote }}</p>
-          </label>
-          <div class="row wrap">
-            <button
-              type="button"
-              class="primary"
-              :disabled="busy || !remoteUrl.trim()"
-              @click="cloneFromRemote"
-            >
-              克隆此地址
-            </button>
-            <button
-              type="button"
-              :disabled="busy || !remoteUrl.trim()"
-              @click="applyRemoteToWorkspace"
-            >
-              设为当前 origin
-            </button>
-            <button type="button" :disabled="!workspace.root" @click="loadCurrentOrigin">
-              读取当前 origin
-            </button>
-            <button type="button" :disabled="!remoteUrl.trim()" @click="copyRemote">复制</button>
-          </div>
         </section>
 
         <button type="button" class="primary" @click="onClose">完成</button>
@@ -577,11 +304,6 @@ h3 {
 .tip code {
   font-size: 0.75rem;
   color: var(--accent);
-}
-.preview {
-  font-size: 0.75rem;
-  word-break: break-all;
-  margin: 0;
 }
 .wrap {
   flex-wrap: wrap;

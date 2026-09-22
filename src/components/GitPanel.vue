@@ -2,13 +2,11 @@
 import { computed, ref, watch } from 'vue'
 import { api, errorMessage } from '../api/tauri'
 import { useGitStore } from '../stores/git'
-import { useSettingsStore } from '../stores/settings'
 import { useToastStore } from '../stores/toast'
 import { useWorkspaceStore } from '../stores/workspace'
 
 const workspace = useWorkspaceStore()
 const git = useGitStore()
-const settings = useSettingsStore()
 const toast = useToastStore()
 const message = ref('')
 
@@ -33,7 +31,7 @@ watch(
 
 async function syncRemoteFromSettings() {
   if (!workspace.root) return
-  const url = settings.remoteUrl.trim()
+  const url = workspace.remoteUrl.trim()
   if (!url) return
   try {
     await api.git.status(workspace.root)

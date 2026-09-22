@@ -293,15 +293,69 @@ fn run_git(args: &[&str], cwd: Option<&Path>) -> AppResult<String> {
     Ok(stdout)
 }
 
+fn normalize_https_remote(url: &str) -> String {
+    let url = url.trim().trim_end_matches('/').to_string();
+    let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    else {
+        return url;
+    };
+    let scheme = if url.starts_with("http://") {
+        "http"
+    } else {
+        "https"
+    };
+    let Some(at) = rest.find('@') else {
+        return url;
+    };
+    let userinfo = &rest[..at];
+    let after_at = &rest[at + 1..];
+    // Already user:pass@host
+    if userinfo.contains(':') {
+        return url;
+    }
+    if userinfo.is_empty() {
+        return url;
+    }
+    let host = after_at.split('/').next().unwrap_or("").to_ascii_lowercase();
+    // GitHub rejects bare `https://TOKEN@github.com/...` on some curl builds ("Bad hostname").
+    // Prefer explicit username.
+    if host == "github.com" || host == "www.github.com" {
+        return format!("{scheme}://x-access-token:{userinfo}@{after_at}");
+    }
+    if host.contains("gitee.com") {
+        return format!("{scheme}://oauth2:{userinfo}@{after_at}");
+    }
+    url
+}
+
 fn inject_token_if_needed(url: &str, token: Option<&str>) -> String {
-    if url.contains("oauth2:") || url.starts_with("git@") || url.starts_with("ssh://") {
+    if url.starts_with("git@") || url.starts_with("ssh://") {
         return url.to_string();
+    }
+    // Already has credentials — never double-inject (causes Bad hostname)
+    if (url.starts_with("https://") || url.starts_with("http://")) && url.contains('@') {
+        return normalize_https_remote(url);
     }
     let Some(token) = token.filter(|t| !t.is_empty()) else {
         return url.to_string();
     };
     if let Some(rest) = url.strip_prefix("https://") {
-        return format!("https://oauth2:{token}@{rest}");
+        let user = if rest.to_ascii_lowercase().contains("github.com") {
+            "x-access-token"
+        } else {
+            "oauth2"
+        };
+        return format!("https://{user}:{token}@{rest}");
+    }
+    if let Some(rest) = url.strip_prefix("http://") {
+        let user = if rest.to_ascii_lowercase().contains("github.com") {
+            "x-access-token"
+        } else {
+            "oauth2"
+        };
+        return format!("http://{user}:{token}@{rest}");
     }
     url.to_string()
 }
@@ -334,7 +388,7 @@ pub fn git_get_remote(root: String) -> AppResult<Option<String>> {
 
 #[tauri::command]
 pub fn git_set_remote(root: String, url: String) -> AppResult<()> {
-    let url = url.trim().to_string();
+    let url = normalize_https_remote(url.trim());
     if url.is_empty() {
         return Err(AppError::new("INVALID_ARGUMENT", "remote url is empty"));
     }
@@ -345,7 +399,7 @@ pub fn git_set_remote(root: String, url: String) -> AppResult<()> {
     {
         return Err(AppError::new(
             "INVALID_ARGUMENT",
-            "请填写完整 Git 地址，例如 https://oauth2:<TOKEN>@gitee.com/owner/repo.git",
+            "请填写完整 Git 地址。GitHub 示例：https://x-access-token:<TOKEN>@github.com/owner/repo.git ；Gitee：https://oauth2:<TOKEN>@gitee.com/owner/repo.git",
         ));
     }
     let repo = open_repo(&root)?;
@@ -625,12 +679,19 @@ fn maybe_rewrite_origin(repo: &git2::Repository, token: Option<&str>) -> AppResu
     if url.starts_with("git@") || url.starts_with("ssh://") {
         return Ok(());
     }
-    if url.contains("oauth2:") {
+    // Keep existing credentials; only normalize GitHub bare-token form
+    if url.contains('@') {
+        let normalized = normalize_https_remote(&url);
+        if normalized != url {
+            repo.remote_set_url("origin", &normalized)?;
+        }
         return Ok(());
     }
-    if url.starts_with("https://") {
+    if url.starts_with("https://") || url.starts_with("http://") {
         let new_url = inject_token_if_needed(&url, Some(token));
-        repo.remote_set_url("origin", &new_url)?;
+        if new_url != url {
+            repo.remote_set_url("origin", &new_url)?;
+        }
     }
     Ok(())
 }
@@ -656,6 +717,27 @@ mod tests {
         git_set_remote(root.clone(), url.clone()).unwrap();
         let got = git_get_remote(root).unwrap();
         assert_eq!(got.as_deref(), Some(url.as_str()));
+    }
+
+    #[test]
+    fn normalize_github_bare_token() {
+        let raw = "https://ghp_abc123@github.com/org/repo.git/";
+        let got = normalize_https_remote(raw);
+        assert_eq!(
+            got,
+            "https://x-access-token:ghp_abc123@github.com/org/repo.git"
+        );
+    }
+
+    #[test]
+    fn inject_does_not_double_wrap() {
+        let url = "https://ghp_abc@github.com/org/repo.git";
+        let got = inject_token_if_needed(url, Some("other"));
+        assert_eq!(
+            got,
+            "https://x-access-token:ghp_abc@github.com/org/repo.git"
+        );
+        assert_eq!(got.matches('@').count(), 1);
     }
 
     #[test]

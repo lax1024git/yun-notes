@@ -72,7 +72,7 @@ function openMenu(payload: {
   y: number
 }) {
   const pad = 8
-  const menuH = 160
+  const menuH = 220
   const x = Math.min(payload.x, window.innerWidth - 148 - pad)
   const y = Math.min(payload.y, window.innerHeight - menuH - pad)
   menu.value = {
@@ -121,8 +121,19 @@ onUnmounted(() => {
 })
 
 async function pickWorkspace() {
-  const selected = await pickDirectory({ directory: true, multiple: false })
-  if (typeof selected === 'string') await workspace.openWorkspace(selected)
+  const selected = await pickDirectory({
+    directory: true,
+    multiple: false,
+    title: '选择 Git 项目目录',
+  })
+  const path =
+    typeof selected === 'string'
+      ? selected
+      : Array.isArray(selected) && selected[0]
+        ? selected[0]
+        : null
+  if (!path) return
+  await workspace.openWorkspace(path)
 }
 
 async function createInDir(dir: string, kind: 'file' | 'dir') {
@@ -201,6 +212,36 @@ async function onRemove(path: string) {
     if (workspace.currentFile === path) workspace.currentFile = null
     await workspace.refresh()
     toast.success('已删除')
+  } catch (e) {
+    toast.error(errorMessage(e))
+  }
+}
+
+async function onExportDecrypted() {
+  const srcPath = menu.value.path
+  closeMenu()
+  if (!workspace.root || !srcPath) {
+    toast.error('请先打开工作区')
+    return
+  }
+  if (!workspace.activeTabCryptoReady || !(await api.lock.sessionReady())) {
+    toast.error('请先解锁当前工作区的笔记加密密码')
+    return
+  }
+  const dest = await pickDirectory({
+    directory: true,
+    multiple: false,
+    title: menu.value.isDir
+      ? '选择解密导出目录（将导出此文件夹）'
+      : '选择解密导出目录（将导出此文件）',
+  })
+  const destRoot = typeof dest === 'string' ? dest : Array.isArray(dest) ? dest[0] : null
+  if (!destRoot) return
+  try {
+    const pathArg =
+      pathsEqual(srcPath, workspace.root) || srcPath === workspace.root ? null : srcPath
+    const n = await api.fs.exportDecrypted(workspace.root, destRoot, pathArg)
+    toast.success(`已导出 ${n} 个文件到：${destRoot}`)
   } catch (e) {
     toast.error(errorMessage(e))
   }
@@ -402,6 +443,16 @@ provideTreeDragApi(dragApi)
       >
         <button type="button" @click="onNewFileHere">新建文件</button>
         <button type="button" @click="onNewDirHere">新建目录</button>
+        <div class="ctx-sep" role="separator" />
+        <button type="button" @click="onExportDecrypted">
+          {{
+            menu.path && menu.path !== workspace.root
+              ? menu.isDir
+                ? '导出解密文件夹…'
+                : '导出解密文件…'
+              : '导出解密工作区…'
+          }}
+        </button>
         <div
           v-if="menu.path && menu.path !== workspace.root"
           class="ctx-sep"

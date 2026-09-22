@@ -116,7 +116,7 @@ pub fn decrypt_bytes(key: &[u8; KEY_LEN], data: &[u8]) -> AppResult<Vec<u8>> {
     if &data[..MAGIC.len()] != MAGIC {
         return Err(AppError::new(
             "CRYPTO_ERROR",
-            "not an encrypted Lax Tools file",
+            "not an encrypted Lax1024 Tools file",
         ));
     }
     let nonce_start = MAGIC.len();

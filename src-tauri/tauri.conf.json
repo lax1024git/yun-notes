@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Lax Tools",
+  "productName": "Lax1024 Tools",
   "version": "0.1.0",
   "identifier": "com.laxtools.desktop",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Lax Tools",
+        "title": "Lax1024 Tools",
         "width": 1280,
         "height": 800,
         "minWidth": 800,

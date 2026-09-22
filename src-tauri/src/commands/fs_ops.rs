@@ -46,7 +46,7 @@ fn is_hidden_name(name: &str) -> bool {
     name.starts_with('.')
 }
 
-/// Detect Lax Tools ciphertext (magic `NW1`).
+/// Detect Lax1024 Tools ciphertext (magic `NW1`).
 pub fn is_encrypted_bytes(data: &[u8]) -> bool {
     data.len() >= 3 && &data[..3] == b"NW1"
 }
@@ -417,10 +417,12 @@ pub fn seal_plaintext_notes(
 }
 
 /// Export decrypted notes (and copy other files) to `dest_root`, preserving relative paths.
+/// `path` is optional: a file or subdirectory under `root`. When omitted, exports the whole workspace.
 #[tauri::command]
 pub fn export_decrypted(
     root: String,
     dest_root: String,
+    path: Option<String>,
     session: tauri::State<'_, SharedCryptoSession>,
 ) -> AppResult<u32> {
     let src_root = PathBuf::from(&root);
@@ -434,6 +436,26 @@ pub fn export_decrypted(
     if dest_root.as_os_str().is_empty() {
         return Err(AppError::new("INVALID_ARGUMENT", "请指定导出目录"));
     }
+
+    let walk_from = match path.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => {
+            let candidate = PathBuf::from(p);
+            if !candidate.exists() {
+                return Err(AppError::new("NOT_FOUND", format!("路径不存在: {p}")));
+            }
+            let src_canon = src_root.canonicalize().unwrap_or(src_root.clone());
+            let cand_canon = candidate.canonicalize().unwrap_or(candidate.clone());
+            if cand_canon != src_canon && !cand_canon.starts_with(&src_canon) {
+                return Err(AppError::new(
+                    "INVALID_ARGUMENT",
+                    "只能导出当前工作区内的路径",
+                ));
+            }
+            candidate
+        }
+        None => src_root.clone(),
+    };
+
     // Refuse exporting into the workspace itself
     let src_canon = src_root.canonicalize().unwrap_or(src_root.clone());
     if let Ok(dest_canon) = dest_root.canonicalize() {
@@ -450,10 +472,28 @@ pub fn export_decrypted(
     let key = key_for_vault(&password, &src_root)?;
     let mut count = 0u32;
 
-    for entry in WalkDir::new(&src_root)
+    // Single file
+    if walk_from.is_file() {
+        let name = walk_from
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "export".into());
+        let dest = dest_root.join(name);
+        if is_note_file(&walk_from) {
+            let text = read_note_plaintext(&walk_from, &key)?;
+            fs::write(&dest, text.as_bytes())?;
+        } else {
+            fs::copy(&walk_from, &dest)?;
+        }
+        return Ok(1);
+    }
+
+    // Directory (whole workspace or subtree)
+    let prefix = walk_from.clone();
+    for entry in WalkDir::new(&walk_from)
         .into_iter()
         .filter_entry(|e| {
-            if e.path() == src_root {
+            if e.path() == walk_from {
                 return true;
             }
             e.file_name()
@@ -467,10 +507,19 @@ pub fn export_decrypted(
         if !path.is_file() {
             continue;
         }
-        let Ok(rel) = path.strip_prefix(&src_root) else {
+        let Ok(rel) = path.strip_prefix(&prefix) else {
             continue;
         };
-        let dest = dest_root.join(rel);
+        // When exporting a subdirectory, nest under that folder name
+        let dest = if prefix == src_root {
+            dest_root.join(rel)
+        } else {
+            let folder = prefix
+                .file_name()
+                .map(|n| PathBuf::from(n))
+                .unwrap_or_else(|| PathBuf::from("export"));
+            dest_root.join(folder).join(rel)
+        };
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)?;
         }
