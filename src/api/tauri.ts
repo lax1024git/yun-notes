@@ -18,6 +18,8 @@ export const api = {
     readMd: (path: string) => invoke<string>('read_md', { path }),
     writeMd: (path: string, content: string) =>
       invoke<void>('write_md', { path, content }),
+    writeBytes: (path: string, data: Uint8Array | number[]) =>
+      invoke<void>('write_bytes', { path, data }),
     createFile: (path: string) => invoke<void>('create_file', { path }),
     createDir: (path: string) => invoke<void>('create_dir', { path }),
     deletePath: (path: string) => invoke<void>('delete_path', { path }),

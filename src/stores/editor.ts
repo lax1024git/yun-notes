@@ -14,6 +14,7 @@ export const useEditorStore = defineStore('editor', () => {
   async function load(path: string) {
     const toast = useToastStore()
     loading.value = true
+    content.value = ''
     try {
       content.value = await api.fs.readMd(path)
       savedAt.value = Date.now()

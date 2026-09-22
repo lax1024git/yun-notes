@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useEditorStore } from '../../stores/editor'
 import { useWorkspaceStore } from '../../stores/workspace'
+import QuickToolbox from '../toolbox/QuickToolbox.vue'
 
 const editor = useEditorStore()
 const workspace = useWorkspaceStore()
@@ -22,6 +23,7 @@ defineExpose({ save })
     <div class="brand">{{ title }}</div>
     <div class="path" :title="pathLabel">{{ pathLabel }}</div>
     <div class="actions">
+      <QuickToolbox />
       <select v-model="editor.mode" aria-label="编辑模式">
         <option value="edit">编辑</option>
         <option value="split">分栏</option>

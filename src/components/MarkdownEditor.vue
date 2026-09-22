@@ -7,33 +7,26 @@ import { useWorkspaceStore } from '../stores/workspace'
 const editor = useEditorStore()
 const workspace = useWorkspaceStore()
 
-/** Local draft avoids pinia→textarea rebind on every keystroke */
+/** Local draft avoids pinia→textarea rebind fighting the caret */
 const draft = ref('')
-let syncingFromStore = false
 
 watch(
-  () => [workspace.currentFile, editor.loading] as const,
-  ([, loading], prev) => {
-    const wasLoading = prev?.[1]
-    if (loading) return
-    // After load completes, or file cleared
-    if (wasLoading || !workspace.currentFile) {
-      syncingFromStore = true
+  () => editor.loading,
+  (loading, wasLoading) => {
+    if (wasLoading && !loading) {
       draft.value = editor.content
-      syncingFromStore = false
+    }
+    if (loading) {
+      draft.value = ''
     }
   },
 )
 
 watch(
-  () => editor.content,
-  (v) => {
-    // External load / programmatic set while not typing
-    if (syncingFromStore) return
-    if (editor.loading) return
-    if (v !== draft.value && !workspace.dirty) {
-      draft.value = v
-    }
+  () => workspace.currentFile,
+  (path) => {
+    if (!path) draft.value = ''
+    else if (!editor.loading) draft.value = editor.content
   },
 )
 

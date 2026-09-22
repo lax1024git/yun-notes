@@ -14,4 +14,16 @@ describe('debounce', () => {
     expect(fn).toHaveBeenCalledTimes(1)
     vi.useRealTimers()
   })
+
+  it('flush runs pending call immediately', () => {
+    vi.useFakeTimers()
+    const fn = vi.fn()
+    const d = debounce(fn, 100)
+    d()
+    d.flush()
+    expect(fn).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(100)
+    expect(fn).toHaveBeenCalledTimes(1)
+    vi.useRealTimers()
+  })
 })

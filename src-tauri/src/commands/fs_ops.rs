@@ -183,6 +183,19 @@ pub fn read_md(
     }
 }
 
+/// Write arbitrary binary bytes (toolbox exports, etc.). Not encrypted.
+#[tauri::command]
+pub fn write_bytes(path: String, data: Vec<u8>) -> AppResult<()> {
+    let p = PathBuf::from(&path);
+    if let Some(parent) = p.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    fs::write(&p, data)?;
+    Ok(())
+}
+
 /// Write note: always store as ciphertext on disk.
 #[tauri::command]
 pub fn write_md(

@@ -105,6 +105,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             fs_ops::scan_workspace,
             fs_ops::read_md,
+            fs_ops::write_bytes,
             fs_ops::write_md,
             fs_ops::create_file,
             fs_ops::create_dir,
