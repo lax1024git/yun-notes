@@ -4,6 +4,7 @@ import { api, errorMessage, isAppError } from '../api/tauri'
 import type { CommitInfo, GitStatus } from '../types'
 import { useSettingsStore } from './settings'
 import { useToastStore } from './toast'
+import { useWorkspaceStore } from './workspace'
 
 export const useGitStore = defineStore('git', () => {
   const status = ref<GitStatus | null>(null)
@@ -11,8 +12,31 @@ export const useGitStore = defineStore('git', () => {
   const loading = ref(false)
   const notRepo = ref(false)
 
-  async function refresh(root: string) {
+  function requireRoot(): string {
+    const workspace = useWorkspaceStore()
+    if (!workspace.root) throw new Error('请先打开项目')
+    return workspace.root
+  }
+
+  async function ensureCryptoSession(): Promise<boolean> {
     const toast = useToastStore()
+    const settings = useSettingsStore()
+    if (!settings.lockEnabled) {
+      toast.error('请先在设置中启用应用锁（笔记磁盘为密文）')
+      return false
+    }
+    const ready = await api.lock.sessionReady()
+    if (!ready) {
+      toast.error('请先解锁应用锁')
+      return false
+    }
+    return true
+  }
+
+  async function refresh(rootPath?: string) {
+    const toast = useToastStore()
+    const root = rootPath ?? useWorkspaceStore().root
+    if (!root) return
     loading.value = true
     try {
       status.value = await api.git.status(root)
@@ -23,7 +47,6 @@ export const useGitStore = defineStore('git', () => {
         typeof e === 'object' && e && 'code' in e
           ? String((e as { code: string }).code)
           : ''
-      // Tauri may wrap error as stringified object
       const msg = errorMessage(e)
       if (code === 'NOT_REPO' || msg.includes('NOT_REPO') || msg.includes('not a git')) {
         status.value = null
@@ -37,29 +60,36 @@ export const useGitStore = defineStore('git', () => {
     }
   }
 
-  async function init(root: string) {
+  async function init(rootPath?: string) {
+    const root = rootPath ?? requireRoot()
     await api.git.init(root)
     await refresh(root)
   }
 
-  async function commit(root: string, message: string) {
+  async function commit(message: string) {
     const toast = useToastStore()
+    if (!(await ensureCryptoSession())) return
+    const root = requireRoot()
     try {
+      // Seal any plaintext before commit
+      await api.fs.sealPlaintextNotes(root)
       await api.git.commit(root, message)
-      toast.success('提交成功')
+      toast.success('提交成功（磁盘密文）')
       await refresh(root)
+      await useWorkspaceStore().refresh()
     } catch (e) {
       toast.error(errorMessage(e))
       throw e
     }
   }
 
-  async function push(root: string) {
+  async function push() {
     const toast = useToastStore()
     const settings = useSettingsStore()
+    const root = requireRoot()
     try {
       await api.git.push(root, settings.giteeToken || null)
-      toast.success('推送成功')
+      toast.success('推送成功（密文）')
       try {
         const { sendNotification } = await import('@tauri-apps/plugin-notification')
         await sendNotification({ title: 'Note Workstation', body: 'Git 推送完成' })
@@ -69,7 +99,10 @@ export const useGitStore = defineStore('git', () => {
       await refresh(root)
     } catch (e) {
       const msg = errorMessage(e)
-      if (msg.toLowerCase().includes('conflict') || (isAppError(e) && (e as { code?: string }).code === 'GIT_CONFLICT')) {
+      if (
+        msg.toLowerCase().includes('conflict') ||
+        (isAppError(e) && (e as { code?: string }).code === 'GIT_CONFLICT')
+      ) {
         try {
           const { sendNotification } = await import('@tauri-apps/plugin-notification')
           await sendNotification({ title: 'Note Workstation', body: '检测到 Git 冲突' })
@@ -82,12 +115,14 @@ export const useGitStore = defineStore('git', () => {
     }
   }
 
-  async function pull(root: string) {
+  async function pull() {
     const toast = useToastStore()
     const settings = useSettingsStore()
+    if (!(await ensureCryptoSession())) return
+    const root = requireRoot()
     try {
       await api.git.pull(root, settings.giteeToken || null)
-      toast.success('拉取成功')
+      toast.success('拉取成功（密文已同步，打开时解密显示）')
       try {
         const { sendNotification } = await import('@tauri-apps/plugin-notification')
         await sendNotification({ title: 'Note Workstation', body: 'Git 拉取完成' })
@@ -95,6 +130,7 @@ export const useGitStore = defineStore('git', () => {
         /* ignore */
       }
       await refresh(root)
+      await useWorkspaceStore().refresh()
     } catch (e) {
       toast.error(errorMessage(e))
       throw e

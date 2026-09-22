@@ -1,11 +1,49 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { onUnmounted, ref, watch } from 'vue'
 import { renderMarkdown } from '../utils/markdown'
+import { debounce } from '../utils/debounce'
 import { useEditorStore } from '../stores/editor'
+import { useWorkspaceStore } from '../stores/workspace'
 import 'highlight.js/styles/github-dark.css'
 
 const editor = useEditorStore()
-const html = computed(() => renderMarkdown(editor.content))
+const workspace = useWorkspaceStore()
+const html = ref('')
+
+const renderDebounced = debounce((src: string) => {
+  html.value = renderMarkdown(src)
+}, 220)
+
+function renderNow(src: string) {
+  renderDebounced.cancel()
+  html.value = renderMarkdown(src)
+}
+
+// Typing: debounced. File switch / load: immediate.
+watch(
+  () => editor.content,
+  (src) => {
+    if (editor.loading) return
+    renderDebounced(src)
+  },
+)
+
+watch(
+  () => workspace.currentFile,
+  () => {
+    renderNow(editor.content)
+  },
+)
+
+watch(
+  () => editor.loading,
+  (loading, was) => {
+    if (was && !loading) renderNow(editor.content)
+  },
+  { immediate: true },
+)
+
+onUnmounted(() => renderDebounced.cancel())
 </script>
 
 <template>

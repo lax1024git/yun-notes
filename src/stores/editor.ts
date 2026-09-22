@@ -29,10 +29,11 @@ export const useEditorStore = defineStore('editor', () => {
 
   async function save(path: string) {
     const toast = useToastStore()
+    const ws = useWorkspaceStore()
+    ws.suppressFsWatch(2500)
     try {
       await api.fs.writeMd(path, content.value)
       savedAt.value = Date.now()
-      const ws = useWorkspaceStore()
       ws.dirty = false
     } catch (e) {
       toast.error(`保存失败: ${errorMessage(e)}`)

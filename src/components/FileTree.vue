@@ -22,11 +22,21 @@ const drag = createTreeDragState()
 
 const rootDropActive = computed(() => drag.active && drag.overDir === '__root__')
 
-const menu = ref<{ visible: boolean; x: number; y: number; path: string }>({
+const menu = ref<{
+  visible: boolean
+  x: number
+  y: number
+  path: string
+  isDir: boolean
+  /** directory to create new entries into */
+  targetDir: string
+}>({
   visible: false,
   x: 0,
   y: 0,
   path: '',
+  isDir: true,
+  targetDir: '',
 })
 
 function joinPath(dir: string, name: string): string {
@@ -54,11 +64,50 @@ function closeMenu() {
   menu.value.visible = false
 }
 
-function onContextMenu(payload: { path: string; x: number; y: number }) {
+function openMenu(payload: {
+  path: string
+  isDir: boolean
+  targetDir: string
+  x: number
+  y: number
+}) {
   const pad = 8
-  const x = Math.min(payload.x, window.innerWidth - 140 - pad)
-  const y = Math.min(payload.y, window.innerHeight - 88 - pad)
-  menu.value = { visible: true, x, y, path: payload.path }
+  const menuH = 160
+  const x = Math.min(payload.x, window.innerWidth - 148 - pad)
+  const y = Math.min(payload.y, window.innerHeight - menuH - pad)
+  menu.value = {
+    visible: true,
+    x,
+    y,
+    path: payload.path,
+    isDir: payload.isDir,
+    targetDir: payload.targetDir,
+  }
+}
+
+function onContextMenu(payload: { path: string; isDir: boolean; x: number; y: number }) {
+  const targetDir = payload.isDir
+    ? payload.path
+    : parentOf(payload.path) || workspace.root || payload.path
+  openMenu({
+    path: payload.path,
+    isDir: payload.isDir,
+    targetDir,
+    x: payload.x,
+    y: payload.y,
+  })
+}
+
+function onRootContextMenu(e: MouseEvent) {
+  if (!workspace.root) return
+  e.preventDefault()
+  openMenu({
+    path: workspace.root,
+    isDir: true,
+    targetDir: workspace.root,
+    x: e.clientX,
+    y: e.clientY,
+  })
 }
 
 function onDocClick() {
@@ -76,28 +125,52 @@ async function pickWorkspace() {
   if (typeof selected === 'string') await workspace.openWorkspace(selected)
 }
 
-async function newFile() {
-  if (!workspace.root) return
-  const name = window.prompt('新文件名（含 .md）', 'untitled.md')
+async function createInDir(dir: string, kind: 'file' | 'dir') {
+  if (!dir) return
+  if (kind === 'file') {
+    const name = window.prompt('新文件名（含 .md）', 'untitled.md')
+    if (!name) return
+    try {
+      const path = joinPath(dir, name)
+      await api.fs.createFile(path)
+      await workspace.refresh()
+      toast.success(`已创建：${name}`)
+    } catch (e) {
+      toast.error(errorMessage(e))
+    }
+    return
+  }
+  const name = window.prompt('新目录名', 'notes')
   if (!name) return
   try {
-    await api.fs.createFile(joinPath(workspace.root, name))
+    await api.fs.createDir(joinPath(dir, name))
     await workspace.refresh()
+    toast.success(`已创建目录：${name}`)
   } catch (e) {
     toast.error(errorMessage(e))
   }
 }
 
+async function newFile() {
+  if (!workspace.root) return
+  await createInDir(workspace.root, 'file')
+}
+
 async function newDir() {
   if (!workspace.root) return
-  const name = window.prompt('新目录名', 'notes')
-  if (!name) return
-  try {
-    await api.fs.createDir(joinPath(workspace.root, name))
-    await workspace.refresh()
-  } catch (e) {
-    toast.error(errorMessage(e))
-  }
+  await createInDir(workspace.root, 'dir')
+}
+
+async function onNewFileHere() {
+  const dir = menu.value.targetDir
+  closeMenu()
+  await createInDir(dir, 'file')
+}
+
+async function onNewDirHere() {
+  const dir = menu.value.targetDir
+  closeMenu()
+  await createInDir(dir, 'dir')
 }
 
 async function onRename(path: string) {
@@ -281,20 +354,25 @@ provideTreeDragApi(dragApi)
 
 <template>
   <div class="file-tree stack">
-    <div class="row head">
-      <strong>{{ workspace.rootName || '工作区' }}</strong>
+    <div class="row head" @contextmenu="onRootContextMenu">
+      <strong :title="workspace.root || undefined">{{ workspace.rootName || '工作区' }}</strong>
       <button type="button" @click="pickWorkspace">打开</button>
       <button type="button" :disabled="!workspace.root" @click="newFile">新建文件</button>
       <button type="button" :disabled="!workspace.root" @click="newDir">新建目录</button>
     </div>
-    <p v-if="!workspace.root" class="muted">请打开本地笔记目录</p>
-    <p v-else class="muted hint">按住文件拖到文件夹上（出现高亮）松开即可移动；拖到空白处移到根目录</p>
+    <p v-if="!workspace.root" class="muted">
+      请选择笔记目录（磁盘存密文，编辑器打开时解密显示）
+    </p>
+    <p v-else class="muted hint">
+      磁盘密文 · 打开解密显示 · 右键可新建文件/目录
+    </p>
 
     <div
       v-if="workspace.root"
       class="tree-body"
       data-drop-root="1"
       :class="{ 'root-drop': rootDropActive, dragging: drag.active }"
+      @contextmenu="onRootContextMenu"
     >
       <TreeNode
         v-for="node in workspace.tree"
@@ -304,7 +382,7 @@ provideTreeDragApi(dragApi)
         :current-file="workspace.currentFile"
         @context-menu="onContextMenu"
       />
-      <div v-if="!workspace.tree.length" class="muted empty">空目录 — 可把文件拖到这里</div>
+      <div v-if="!workspace.tree.length" class="muted empty">空目录 — 右键新建，或把文件拖到这里</div>
     </div>
 
     <Teleport to="body">
@@ -322,8 +400,28 @@ provideTreeDragApi(dragApi)
         @click.stop
         @contextmenu.prevent
       >
-        <button type="button" @click="onRename(menu.path)">重命名</button>
-        <button type="button" class="danger" @click="onRemove(menu.path)">删除</button>
+        <button type="button" @click="onNewFileHere">新建文件</button>
+        <button type="button" @click="onNewDirHere">新建目录</button>
+        <div
+          v-if="menu.path && menu.path !== workspace.root"
+          class="ctx-sep"
+          role="separator"
+        />
+        <button
+          v-if="menu.path && menu.path !== workspace.root"
+          type="button"
+          @click="onRename(menu.path)"
+        >
+          重命名
+        </button>
+        <button
+          v-if="menu.path && menu.path !== workspace.root"
+          type="button"
+          class="danger"
+          @click="onRemove(menu.path)"
+        >
+          删除
+        </button>
       </div>
     </Teleport>
   </div>
@@ -413,5 +511,10 @@ body.nw-tree-dragging * {
 .ctx-menu button.danger:hover {
   background: color-mix(in srgb, var(--danger) 16%, transparent);
   color: var(--danger);
+}
+.ctx-sep {
+  height: 1px;
+  margin: 0.2rem 0.35rem;
+  background: var(--border);
 }
 </style>

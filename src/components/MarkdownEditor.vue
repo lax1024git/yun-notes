@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { debounce } from '../utils/debounce'
 import { useEditorStore } from '../stores/editor'
 import { useWorkspaceStore } from '../stores/workspace'
@@ -7,17 +7,52 @@ import { useWorkspaceStore } from '../stores/workspace'
 const editor = useEditorStore()
 const workspace = useWorkspaceStore()
 
+/** Local draft avoids pinia→textarea rebind on every keystroke */
+const draft = ref('')
+let syncingFromStore = false
+
+watch(
+  () => [workspace.currentFile, editor.loading] as const,
+  ([, loading], prev) => {
+    const wasLoading = prev?.[1]
+    if (loading) return
+    // After load completes, or file cleared
+    if (wasLoading || !workspace.currentFile) {
+      syncingFromStore = true
+      draft.value = editor.content
+      syncingFromStore = false
+    }
+  },
+)
+
+watch(
+  () => editor.content,
+  (v) => {
+    // External load / programmatic set while not typing
+    if (syncingFromStore) return
+    if (editor.loading) return
+    if (v !== draft.value && !workspace.dirty) {
+      draft.value = v
+    }
+  },
+)
+
 const autoSave = debounce(() => {
   if (workspace.currentFile && workspace.dirty) {
     void editor.save(workspace.currentFile)
   }
-}, 800)
+}, 1500)
 
-function onInput(e: Event) {
-  const value = (e.target as HTMLTextAreaElement).value
+function pushToStore(value: string) {
   editor.content = value
   editor.markDirty()
   autoSave()
+}
+
+function onInput(e: Event) {
+  const value = (e.target as HTMLTextAreaElement).value
+  draft.value = value
+  pushToStore(value)
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -26,40 +61,54 @@ function onKeydown(e: KeyboardEvent) {
     const el = e.target as HTMLTextAreaElement
     const start = el.selectionStart
     const end = el.selectionEnd
-    const v = editor.content
-    editor.content = `${v.slice(0, start)}  ${v.slice(end)}`
-    editor.markDirty()
-    autoSave()
+    const v = draft.value
+    const next = `${v.slice(0, start)}  ${v.slice(end)}`
+    draft.value = next
+    pushToStore(next)
     requestAnimationFrame(() => {
       el.selectionStart = el.selectionEnd = start + 2
     })
   }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
     e.preventDefault()
+    autoSave.flush()
     if (workspace.currentFile) void editor.save(workspace.currentFile)
   }
+}
+
+function onBlur() {
+  autoSave.flush()
 }
 
 function onGlobalSave(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
     e.preventDefault()
+    autoSave.flush()
     if (workspace.currentFile) void editor.save(workspace.currentFile)
   }
 }
 
-onMounted(() => window.addEventListener('keydown', onGlobalSave))
-onUnmounted(() => window.removeEventListener('keydown', onGlobalSave))
+onMounted(() => {
+  draft.value = editor.content
+  window.addEventListener('keydown', onGlobalSave)
+})
+onUnmounted(() => {
+  autoSave.flush()
+  autoSave.cancel()
+  window.removeEventListener('keydown', onGlobalSave)
+})
 </script>
 
 <template>
   <textarea
     class="editor"
-    :value="editor.content"
+    :value="draft"
     :disabled="!workspace.currentFile || editor.loading"
     placeholder="选择或新建 Markdown 文件…"
     spellcheck="false"
     @input="onInput"
     @keydown="onKeydown"
+    @blur="onBlur"
   />
 </template>
 

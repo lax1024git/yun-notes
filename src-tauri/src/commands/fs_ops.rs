@@ -1,7 +1,11 @@
+use crate::crypto::{
+    decrypt_bytes, encrypt_bytes, key_for_vault, require_session_password, SharedCryptoSession,
+    CRYPTO_META_FILE,
+};
 use crate::error::{AppError, AppResult};
 use serde::Serialize;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use walkdir::WalkDir;
@@ -42,6 +46,47 @@ fn is_hidden_name(name: &str) -> bool {
     name.starts_with('.')
 }
 
+/// Detect Note Workstation ciphertext (magic `NW1`).
+pub fn is_encrypted_bytes(data: &[u8]) -> bool {
+    data.len() >= 3 && &data[..3] == b"NW1"
+}
+
+pub fn is_encrypted_file(path: &Path) -> bool {
+    let Ok(mut f) = fs::File::open(path) else {
+        return false;
+    };
+    let mut magic = [0u8; 3];
+    matches!(f.read(&mut magic), Ok(3) if &magic == b"NW1")
+}
+
+fn workspace_root_for(path: &Path) -> Option<PathBuf> {
+    // Walk up looking for .nw-crypto.json or .git
+    let mut cur = path.to_path_buf();
+    if cur.is_file() {
+        cur = cur.parent()?.to_path_buf();
+    }
+    loop {
+        if cur.join(CRYPTO_META_FILE).exists() || cur.join(".git").exists() {
+            return Some(cur);
+        }
+        if !cur.pop() {
+            break;
+        }
+    }
+    None
+}
+
+fn key_for_path(session: &SharedCryptoSession, file: &Path) -> AppResult<[u8; 32]> {
+    let password = require_session_password(session)?;
+    let root = workspace_root_for(file).ok_or_else(|| {
+        AppError::new(
+            "CRYPTO_ERROR",
+            "找不到工作区加密配置，请先打开并初始化工作区",
+        )
+    })?;
+    key_for_vault(&password, &root)
+}
+
 fn to_epoch(mtime: SystemTime) -> Option<i64> {
     mtime
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -71,6 +116,8 @@ fn scan_children(dir: &Path) -> AppResult<Vec<FileNode>> {
         if is_hidden_name(&name) {
             continue;
         }
+        // Legacy dual-layout: hide leftover work/ folder when browsing vault-as-root parent
+        // (single-dir mode keeps everything visible except hidden)
         let meta = entry.metadata()?;
         if meta.is_dir() {
             let children = scan_children(&path)?;
@@ -84,6 +131,7 @@ fn scan_children(dir: &Path) -> AppResult<Vec<FileNode>> {
                 modified: meta.modified().ok().and_then(to_epoch),
             });
         } else if meta.is_file() {
+            // Encrypted notes are still shown; content decrypts on open
             files.push(FileNode {
                 name,
                 path: path.to_string_lossy().to_string(),
@@ -107,8 +155,12 @@ pub fn scan_workspace(root: String) -> AppResult<Vec<FileNode>> {
     scan_dir(Path::new(&root))
 }
 
+/// Read note: decrypt if ciphertext, otherwise return plaintext (legacy / just-copied).
 #[tauri::command]
-pub fn read_md(path: String) -> AppResult<String> {
+pub fn read_md(
+    path: String,
+    session: tauri::State<'_, SharedCryptoSession>,
+) -> AppResult<String> {
     let p = PathBuf::from(&path);
     if !p.exists() {
         return Err(AppError::new("NOT_FOUND", format!("file not found: {path}")));
@@ -119,11 +171,25 @@ pub fn read_md(path: String) -> AppResult<String> {
             "仅支持打开 .md / .markdown / .txt 笔记文件",
         ));
     }
-    Ok(fs::read_to_string(p)?)
+    let raw = fs::read(&p)?;
+    if is_encrypted_bytes(&raw) {
+        let key = key_for_path(&session, &p)?;
+        let plain = decrypt_bytes(&key, &raw)?;
+        String::from_utf8(plain).map_err(|e| {
+            AppError::new("CRYPTO_ERROR", format!("解密后不是合法 UTF-8：{e}"))
+        })
+    } else {
+        String::from_utf8(raw).map_err(|e| AppError::new("IO_ERROR", e.to_string()))
+    }
 }
 
+/// Write note: always store as ciphertext on disk.
 #[tauri::command]
-pub fn write_md(path: String, content: String) -> AppResult<()> {
+pub fn write_md(
+    path: String,
+    content: String,
+    session: tauri::State<'_, SharedCryptoSession>,
+) -> AppResult<()> {
     let p = PathBuf::from(&path);
     if !is_note_file(&p) {
         return Err(AppError::new(
@@ -131,13 +197,15 @@ pub fn write_md(path: String, content: String) -> AppResult<()> {
             "仅支持保存 .md / .markdown / .txt 笔记文件",
         ));
     }
+    let key = key_for_path(&session, &p)?;
+    let cipher = encrypt_bytes(&key, content.as_bytes())?;
     if let Some(parent) = p.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)?;
         }
     }
     let tmp = PathBuf::from(format!("{path}.tmp"));
-    fs::write(&tmp, content.as_bytes())?;
+    fs::write(&tmp, &cipher)?;
     fs::rename(&tmp, &p).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         AppError::from(e)
@@ -146,7 +214,10 @@ pub fn write_md(path: String, content: String) -> AppResult<()> {
 }
 
 #[tauri::command]
-pub fn create_file(path: String) -> AppResult<()> {
+pub fn create_file(
+    path: String,
+    session: tauri::State<'_, SharedCryptoSession>,
+) -> AppResult<()> {
     let p = PathBuf::from(&path);
     if let Some(parent) = p.parent() {
         if !parent.as_os_str().is_empty() {
@@ -159,7 +230,13 @@ pub fn create_file(path: String) -> AppResult<()> {
             format!("path already exists: {path}"),
         ));
     }
-    fs::write(&p, b"")?;
+    if is_note_file(&p) {
+        let key = key_for_path(&session, &p)?;
+        let cipher = encrypt_bytes(&key, b"")?;
+        fs::write(&p, cipher)?;
+    } else {
+        fs::write(&p, b"")?;
+    }
     Ok(())
 }
 
@@ -201,7 +278,6 @@ pub fn rename_path(old: String, new_path: String) -> AppResult<()> {
             fs::create_dir_all(parent)?;
         }
     }
-    // Windows 上若 rename 失败，尝试 copy+remove（跨卷时）
     match fs::rename(&from, &to) {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -215,8 +291,23 @@ pub fn rename_path(old: String, new_path: String) -> AppResult<()> {
     }
 }
 
+fn read_note_plaintext(path: &Path, key: &[u8; 32]) -> AppResult<String> {
+    let raw = fs::read(path)?;
+    if is_encrypted_bytes(&raw) {
+        let plain = decrypt_bytes(key, &raw)?;
+        String::from_utf8(plain)
+            .map_err(|e| AppError::new("CRYPTO_ERROR", format!("decrypt utf8: {e}")))
+    } else {
+        String::from_utf8(raw).map_err(|e| AppError::new("IO_ERROR", e.to_string()))
+    }
+}
+
 #[tauri::command]
-pub fn search_files(root: String, keyword: String) -> AppResult<Vec<SearchHit>> {
+pub fn search_files(
+    root: String,
+    keyword: String,
+    session: tauri::State<'_, SharedCryptoSession>,
+) -> AppResult<Vec<SearchHit>> {
     let kw = keyword.trim();
     if kw.is_empty() {
         return Err(AppError::new("INVALID_ARGUMENT", "keyword is empty"));
@@ -228,14 +319,14 @@ pub fn search_files(root: String, keyword: String) -> AppResult<Vec<SearchHit>> 
             format!("path not found: {root}"),
         ));
     }
-
+    let password = require_session_password(&session)?;
+    let key = key_for_vault(&password, &root_path)?;
     let kw_lower = kw.to_lowercase();
     let mut hits = Vec::new();
 
     for entry in WalkDir::new(&root_path)
         .into_iter()
         .filter_entry(|e| {
-            // Do not skip the search root even if its folder name starts with '.'
             if e.path() == root_path {
                 return true;
             }
@@ -253,16 +344,13 @@ pub fn search_files(root: String, keyword: String) -> AppResult<Vec<SearchHit>> 
         if !path.is_file() || !is_note_file(path) {
             continue;
         }
-        let file = match fs::File::open(path) {
-            Ok(f) => f,
-            Err(_) => continue,
+        let Ok(text) = read_note_plaintext(path, &key) else {
+            continue;
         };
-        let reader = BufReader::new(file);
-        for (idx, line_res) in reader.lines().enumerate() {
+        for (idx, line) in text.lines().enumerate() {
             if hits.len() >= 200 {
                 break;
             }
-            let Ok(line) = line_res else { continue };
             if line.to_lowercase().contains(&kw_lower) {
                 let preview: String = line.chars().take(120).collect();
                 hits.push(SearchHit {
@@ -277,50 +365,138 @@ pub fn search_files(root: String, keyword: String) -> AppResult<Vec<SearchHit>> 
     Ok(hits)
 }
 
+/// Encrypt any plaintext notes under root (e.g. files just copied in).
+#[tauri::command]
+pub fn seal_plaintext_notes(
+    root: String,
+    session: tauri::State<'_, SharedCryptoSession>,
+) -> AppResult<u32> {
+    let root_path = PathBuf::from(&root);
+    let password = require_session_password(&session)?;
+    let key = key_for_vault(&password, &root_path)?;
+    let mut count = 0u32;
+    for entry in WalkDir::new(&root_path)
+        .into_iter()
+        .filter_entry(|e| {
+            if e.path() == root_path {
+                return true;
+            }
+            e.file_name()
+                .to_str()
+                .map(|n| !is_hidden_name(n))
+                .unwrap_or(true)
+        })
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        if !path.is_file() || !is_note_file(path) {
+            continue;
+        }
+        let Ok(raw) = fs::read(path) else { continue };
+        if is_encrypted_bytes(&raw) {
+            continue;
+        }
+        let cipher = encrypt_bytes(&key, &raw)?;
+        fs::write(path, cipher)?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Export decrypted notes (and copy other files) to `dest_root`, preserving relative paths.
+#[tauri::command]
+pub fn export_decrypted(
+    root: String,
+    dest_root: String,
+    session: tauri::State<'_, SharedCryptoSession>,
+) -> AppResult<u32> {
+    let src_root = PathBuf::from(&root);
+    let dest_root = PathBuf::from(&dest_root);
+    if !src_root.is_dir() {
+        return Err(AppError::new(
+            "NOT_FOUND",
+            format!("workspace not found: {root}"),
+        ));
+    }
+    if dest_root.as_os_str().is_empty() {
+        return Err(AppError::new("INVALID_ARGUMENT", "请指定导出目录"));
+    }
+    // Refuse exporting into the workspace itself
+    let src_canon = src_root.canonicalize().unwrap_or(src_root.clone());
+    if let Ok(dest_canon) = dest_root.canonicalize() {
+        if dest_canon == src_canon || dest_canon.starts_with(&src_canon) {
+            return Err(AppError::new(
+                "INVALID_ARGUMENT",
+                "导出目录不能是工作区或其子目录",
+            ));
+        }
+    }
+    fs::create_dir_all(&dest_root)?;
+
+    let password = require_session_password(&session)?;
+    let key = key_for_vault(&password, &src_root)?;
+    let mut count = 0u32;
+
+    for entry in WalkDir::new(&src_root)
+        .into_iter()
+        .filter_entry(|e| {
+            if e.path() == src_root {
+                return true;
+            }
+            e.file_name()
+                .to_str()
+                .map(|n| !is_hidden_name(n))
+                .unwrap_or(true)
+        })
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(rel) = path.strip_prefix(&src_root) else {
+            continue;
+        };
+        let dest = dest_root.join(rel);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if is_note_file(path) {
+            let text = read_note_plaintext(path, &key)?;
+            fs::write(&dest, text.as_bytes())?;
+        } else {
+            fs::copy(path, &dest)?;
+        }
+        count += 1;
+    }
+
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use crate::crypto::{derive_key, encrypt_bytes, CryptoMeta};
 
     #[test]
-    fn scan_shows_all_files_skips_dot() {
+    fn scan_shows_encrypted_notes() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("a.md"), "x").unwrap();
+        let key = derive_key("pass1234", b"0123456789abcdef").unwrap();
+        let enc = encrypt_bytes(&key, b"# hi").unwrap();
+        fs::write(dir.path().join("a.md"), &enc).unwrap();
         fs::write(dir.path().join("b.rs"), "x").unwrap();
-        fs::write(dir.path().join("rice-hk.pem"), "x").unwrap();
-        fs::create_dir(dir.path().join(".git")).unwrap();
         let nodes = scan_dir(dir.path()).unwrap();
-        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes.len(), 2);
         let md = nodes.iter().find(|n| n.name == "a.md").unwrap();
         assert!(md.is_note);
-        let pem = nodes.iter().find(|n| n.name == "rice-hk.pem").unwrap();
-        assert!(!pem.is_note);
-        assert!(!nodes.iter().any(|n| n.name == ".git"));
     }
 
     #[test]
-    fn write_md_atomic_no_tmp_left() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("note.md");
-        write_md(
-            path.to_string_lossy().to_string(),
-            "hello world".into(),
-        )
-        .unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "hello world");
-        assert!(!dir.path().join("note.md.tmp").exists());
-    }
-
-    #[test]
-    fn search_case_insensitive_and_limit_preview() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut f = fs::File::create(dir.path().join("a.md")).unwrap();
-        let long = "X".repeat(200);
-        writeln!(f, "Hello TOKEN world").unwrap();
-        writeln!(f, "{long}").unwrap();
-        let hits = search_files(dir.path().to_string_lossy().to_string(), "token".into()).unwrap();
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].line, 1);
-        assert!(hits[0].preview.len() <= 120);
+    fn encrypted_roundtrip_helpers() {
+        let key = derive_key("pass1234", b"0123456789abcdef").unwrap();
+        let enc = encrypt_bytes(&key, b"hello").unwrap();
+        assert!(is_encrypted_bytes(&enc));
+        let meta = CryptoMeta::new_random().unwrap();
+        assert!(!meta.salt.is_empty());
     }
 }

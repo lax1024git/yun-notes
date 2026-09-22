@@ -8,6 +8,10 @@ import type {
   SearchHit,
 } from '../types'
 
+export interface ProjectPaths {
+  root: string
+}
+
 export const api = {
   fs: {
     scanWorkspace: (root: string) => invoke<FileNode[]>('scan_workspace', { root }),
@@ -21,6 +25,23 @@ export const api = {
       invoke<void>('rename_path', { old, newPath }),
     searchFiles: (root: string, keyword: string) =>
       invoke<SearchHit[]>('search_files', { root, keyword }),
+    sealPlaintextNotes: (root: string) =>
+      invoke<number>('seal_plaintext_notes', { root }),
+    exportDecrypted: (root: string, destRoot: string) =>
+      invoke<number>('export_decrypted', { root, destRoot }),
+  },
+  project: {
+    ensure: (root: string) => invoke<ProjectPaths>('project_ensure', { root }),
+    resolve: (root: string) => invoke<ProjectPaths>('project_resolve', { root }),
+    init: (root: string) => invoke<ProjectPaths>('project_init', { root }),
+  },
+  watch: {
+    workDir: (workRoot: string) => invoke<void>('watch_work_dir', { workRoot }),
+    unwatch: () => invoke<void>('unwatch_work_dir'),
+  },
+  sync: {
+    rekeyWorkspace: (root: string, newPassword: string) =>
+      invoke<void>('rekey_workspace', { root, newPassword }),
   },
   git: {
     init: (root: string) => invoke<void>('git_init', { root }),
@@ -61,6 +82,9 @@ export const api = {
       invoke<{ salt: string; hash: string }>('app_lock_hash', { password }),
     verify: (password: string, salt: string, hash: string) =>
       invoke<boolean>('app_lock_verify', { password, salt, hash }),
+    sessionSet: (password: string) => invoke<void>('crypto_session_set', { password }),
+    sessionClear: () => invoke<void>('crypto_session_clear'),
+    sessionReady: () => invoke<boolean>('crypto_session_ready'),
   },
 }
 

@@ -1,14 +1,27 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
-import { api } from '../api/tauri'
+import { computed, ref, watch } from 'vue'
+import { api, errorMessage } from '../api/tauri'
 import { useGitStore } from '../stores/git'
 import { useSettingsStore } from '../stores/settings'
+import { useToastStore } from '../stores/toast'
 import { useWorkspaceStore } from '../stores/workspace'
 
 const workspace = useWorkspaceStore()
 const git = useGitStore()
 const settings = useSettingsStore()
+const toast = useToastStore()
 const message = ref('')
+
+const visibleChanges = computed(() => {
+  const changes = git.status?.changes ?? []
+  return changes.filter((c) => {
+    const p = c.path.replace(/\\/g, '/')
+    const base = p.split('/').pop() || p
+    if (base.startsWith('.')) return false
+    if (base === '.nw-crypto.json' || p.includes('.nw-crypto.json')) return false
+    return true
+  })
+})
 
 watch(
   () => workspace.root,
@@ -32,27 +45,34 @@ async function syncRemoteFromSettings() {
 
 async function init() {
   if (!workspace.root) return
-  await git.init(workspace.root)
-  await syncRemoteFromSettings()
-  await git.refresh(workspace.root)
+  try {
+    await api.project.init(workspace.root)
+    await git.init(workspace.root)
+    await syncRemoteFromSettings()
+    await git.refresh(workspace.root)
+    await workspace.refresh()
+    toast.success('工作区已初始化（磁盘密文 · Git 同步密文）')
+  } catch (e) {
+    toast.error(errorMessage(e))
+  }
 }
 
 async function commit() {
   if (!workspace.root || !message.value.trim()) return
-  await git.commit(workspace.root, message.value.trim())
+  await git.commit(message.value.trim())
   message.value = ''
 }
 
 async function push() {
   if (!workspace.root) return
   await syncRemoteFromSettings()
-  await git.push(workspace.root)
+  await git.push()
 }
 
 async function pull() {
   if (!workspace.root) return
   await syncRemoteFromSettings()
-  await git.pull(workspace.root)
+  await git.pull()
 }
 
 function statusColor(status: string) {
@@ -67,13 +87,15 @@ function statusColor(status: string) {
 <template>
   <div class="stack">
     <h3>Git</h3>
-    <p class="muted tip">远程地址请在「设置」中配置</p>
+    <p class="muted tip">
+      笔记在磁盘上为密文；编辑器打开时解密。Git 推送/拉取的也是密文。
+    </p>
 
     <template v-if="!workspace.root">
-      <p class="muted">打开工作区后可用</p>
+      <p class="muted">请先打开工作区</p>
     </template>
     <template v-else-if="git.notRepo">
-      <button class="primary" @click="init">初始化仓库</button>
+      <button class="primary" @click="init">初始化 Git 仓库</button>
     </template>
     <template v-else-if="git.status">
       <div class="muted">
@@ -81,13 +103,13 @@ function statusColor(status: string) {
       </div>
       <ul class="changes">
         <li
-          v-for="c in git.status.changes"
+          v-for="c in visibleChanges"
           :key="c.path + c.status"
           :style="{ color: statusColor(c.status) }"
         >
           {{ c.status }} · {{ c.path }}
         </li>
-        <li v-if="!git.status.changes.length" class="muted">无变更</li>
+        <li v-if="!visibleChanges.length" class="muted">无变更</li>
       </ul>
       <input v-model="message" placeholder="提交说明" @keydown.enter="commit" />
       <div class="row">

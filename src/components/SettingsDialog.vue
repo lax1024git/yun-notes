@@ -96,6 +96,10 @@ async function applyRemoteToWorkspace() {
     toast.error('请先打开工作区')
     return
   }
+  if (!settings.lockEnabled || !(await api.lock.sessionReady())) {
+    toast.error('请先启用并解锁应用锁')
+    return
+  }
   busy.value = true
   try {
     try {
@@ -119,6 +123,10 @@ async function cloneFromRemote() {
     toast.error('请填写完整 Git 地址')
     return
   }
+  if (!settings.lockEnabled || !(await api.lock.sessionReady())) {
+    toast.error('请先启用并解锁应用锁后再克隆')
+    return
+  }
   const parent = await pickDirectory({ directory: true, multiple: false })
   if (typeof parent !== 'string') return
   const leaf = leafNameFromUrl(url)
@@ -130,7 +138,7 @@ async function cloneFromRemote() {
   try {
     await api.git.clone(url, dest)
     await persistRemote()
-    toast.success('克隆完成')
+    toast.success('克隆完成（密文仓库，打开笔记时解密）')
     if (window.confirm('是否打开为当前工作区？')) {
       await workspace.openWorkspace(dest)
     }
@@ -153,6 +161,32 @@ async function copyRemote() {
     toast.success(`已复制：${maskedRemote.value}`)
   } catch (e) {
     toast.error(errorMessage(e))
+  }
+}
+
+async function exportDecrypted() {
+  if (!workspace.root) {
+    toast.error('请先打开工作区')
+    return
+  }
+  if (!settings.lockEnabled || !(await api.lock.sessionReady())) {
+    toast.error('请先启用并解锁应用锁后再导出')
+    return
+  }
+  const dest = await pickDirectory({
+    directory: true,
+    multiple: false,
+    title: '选择解密导出目录',
+  })
+  if (typeof dest !== 'string') return
+  busy.value = true
+  try {
+    const n = await api.fs.exportDecrypted(workspace.root, dest)
+    toast.success(`已导出 ${n} 个文件到：${dest}`)
+  } catch (e) {
+    toast.error(errorMessage(e))
+  } finally {
+    busy.value = false
   }
 }
 
@@ -198,11 +232,12 @@ async function changeAppLock() {
   }
   lockBusy.value = true
   try {
-    await settings.changeLockPassword(lockCurrent.value, lockPwd.value)
+    const wsRoot = workspace.root
+    await settings.changeLockPassword(lockCurrent.value, lockPwd.value, wsRoot)
     lockCurrent.value = ''
     lockPwd.value = ''
     lockPwd2.value = ''
-    toast.success('密码已修改')
+    toast.success(wsRoot ? '密码已修改，笔记已用新密钥重加密' : '密码已修改')
   } catch (e) {
     toast.error(errorMessage(e))
   } finally {
@@ -254,7 +289,7 @@ async function disableAppLock() {
         <section class="stack section">
           <h3>启动密码锁</h3>
           <p class="muted tip">
-            启用后每次启动需输入密码。关闭或修改需验证当前密码；忘记密码需手动清除应用配置。
+            启用后每次启动需输入密码，并用于加解密磁盘上的笔记。关闭或修改需验证当前密码；忘记密码需手动清除应用配置。
           </p>
           <template v-if="!settings.lockEnabled">
             <label class="stack">
@@ -302,6 +337,21 @@ async function disableAppLock() {
               </button>
             </div>
           </template>
+        </section>
+
+        <section class="stack section">
+          <h3>导出明文</h3>
+          <p class="muted tip">
+            将工作区笔记解密后导出到指定目录（保留相对路径；非笔记文件原样复制）。
+          </p>
+          <button
+            type="button"
+            class="primary"
+            :disabled="busy || !workspace.root"
+            @click="exportDecrypted"
+          >
+            选择目录并导出
+          </button>
         </section>
 
         <section class="stack section">

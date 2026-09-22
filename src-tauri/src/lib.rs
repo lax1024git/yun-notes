@@ -1,17 +1,23 @@
 mod commands;
+mod crypto;
 mod error;
 
-use commands::{app_lock, fs_ops, git_ops, gitee_ops};
+use commands::{app_lock, fs_ops, git_ops, gitee_ops, sync_ops, watch_ops};
+use crypto::{CryptoSession, SharedCryptoSession};
+use std::sync::Mutex;
+use watch_ops::WorkWatchState;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager,
+    Manager, RunEvent, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        .manage(Mutex::new(CryptoSession::default()) as SharedCryptoSession)
+        .manage(Mutex::new(WorkWatchState::default()))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -21,6 +27,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
+                let _ = window.unminimize();
                 let _ = window.set_focus();
             }
         }))
@@ -28,11 +35,14 @@ pub fn run() {
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
                     if event.state == ShortcutState::Pressed {
-                        let ctrl_shift_n = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyN);
-                        let cmd_shift_n = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyN);
+                        let ctrl_shift_n =
+                            Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyN);
+                        let cmd_shift_n =
+                            Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyN);
                         if shortcut == &ctrl_shift_n || shortcut == &cmd_shift_n {
                             if let Some(window) = app.get_webview_window("main") {
                                 let _ = window.show();
+                                let _ = window.unminimize();
                                 let _ = window.set_focus();
                             }
                         }
@@ -54,6 +64,7 @@ pub fn run() {
                         "show" => {
                             if let Some(window) = app.get_webview_window("main") {
                                 let _ = window.show();
+                                let _ = window.unminimize();
                                 let _ = window.set_focus();
                             }
                         }
@@ -72,17 +83,20 @@ pub fn run() {
                             let app = tray.app_handle();
                             if let Some(window) = app.get_webview_window("main") {
                                 let _ = window.show();
+                                let _ = window.unminimize();
                                 let _ = window.set_focus();
                             }
                         }
                     })
                     .build(app)?;
 
-                let ctrl_shift_n = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyN);
+                let ctrl_shift_n =
+                    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyN);
                 app.global_shortcut().register(ctrl_shift_n)?;
                 #[cfg(target_os = "macos")]
                 {
-                    let cmd_shift_n = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyN);
+                    let cmd_shift_n =
+                        Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyN);
                     app.global_shortcut().register(cmd_shift_n)?;
                 }
             }
@@ -112,6 +126,35 @@ pub fn run() {
             gitee_ops::gitee_create_repo,
             app_lock::app_lock_hash,
             app_lock::app_lock_verify,
-        ])        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+            app_lock::crypto_session_set,
+            app_lock::crypto_session_clear,
+            app_lock::crypto_session_ready,
+            sync_ops::encrypt_work_to_vault,
+            sync_ops::decrypt_vault_to_work,
+            sync_ops::decrypt_vault_to_work_if_needed,
+            sync_ops::rekey_vault_from_work,
+            sync_ops::rekey_workspace,
+            sync_ops::project_ensure,
+            sync_ops::project_resolve,
+            sync_ops::project_init,
+            fs_ops::seal_plaintext_notes,
+            fs_ops::export_decrypted,
+            watch_ops::watch_work_dir,
+            watch_ops::unwatch_work_dir,
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| match event {
+        // 有托盘时关窗口不会自动退出进程；点关闭应真正退出
+        RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == "main" => {
+            api.prevent_close();
+            app_handle.exit(0);
+        }
+        _ => {}
+    });
 }

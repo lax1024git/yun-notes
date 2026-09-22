@@ -1,3 +1,4 @@
+use crate::crypto::SharedCryptoSession;
 use crate::error::{AppError, AppResult};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -45,17 +46,63 @@ pub fn app_lock_hash(password: String) -> AppResult<AppLockHash> {
     })
 }
 
-/// 校验密码是否匹配已存 salt/hash
+/// 校验密码是否匹配已存 salt/hash；成功时写入会话密码供 vault 加解密
 #[tauri::command]
-pub fn app_lock_verify(password: String, salt: String, hash: String) -> AppResult<bool> {
+pub fn app_lock_verify(
+    password: String,
+    salt: String,
+    hash: String,
+    session: tauri::State<'_, SharedCryptoSession>,
+) -> AppResult<bool> {
+    let ok = verify_password(&password, &salt, &hash)?;
+    if ok {
+        let mut guard = session
+            .lock()
+            .map_err(|_| AppError::new("INTERNAL", "crypto session lock poisoned"))?;
+        guard.set_password(password);
+    }
+    Ok(ok)
+}
+
+fn verify_password(password: &str, salt: &str, hash: &str) -> AppResult<bool> {
     if password.is_empty() || salt.is_empty() || hash.is_empty() {
         return Ok(false);
     }
     let salt_bytes = hex::decode(salt.trim())
         .map_err(|_| AppError::new("INVALID_ARGUMENT", "invalid salt"))?;
-    let computed = hash_with_salt(&password, &salt_bytes);
-    // 常量时间比较
+    let computed = hash_with_salt(password, &salt_bytes);
     Ok(constant_time_eq(computed.as_bytes(), hash.trim().as_bytes()))
+}
+
+/// 启用/改密后主动写入会话密码（hash 命令本身不持有 state 副作用时用）
+#[tauri::command]
+pub fn crypto_session_set(
+    password: String,
+    session: tauri::State<'_, SharedCryptoSession>,
+) -> AppResult<()> {
+    ensure_password(&password)?;
+    let mut guard = session
+        .lock()
+        .map_err(|_| AppError::new("INTERNAL", "crypto session lock poisoned"))?;
+    guard.set_password(password);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn crypto_session_clear(session: tauri::State<'_, SharedCryptoSession>) -> AppResult<()> {
+    let mut guard = session
+        .lock()
+        .map_err(|_| AppError::new("INTERNAL", "crypto session lock poisoned"))?;
+    guard.clear();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn crypto_session_ready(session: tauri::State<'_, SharedCryptoSession>) -> AppResult<bool> {
+    let guard = session
+        .lock()
+        .map_err(|_| AppError::new("INTERNAL", "crypto session lock poisoned"))?;
+    Ok(guard.has_password())
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -76,8 +123,8 @@ mod tests {
     #[test]
     fn hash_and_verify_roundtrip() {
         let made = app_lock_hash("secret123".into()).unwrap();
-        assert!(app_lock_verify("secret123".into(), made.salt.clone(), made.hash.clone()).unwrap());
-        assert!(!app_lock_verify("wrong".into(), made.salt, made.hash).unwrap());
+        assert!(verify_password("secret123", &made.salt, &made.hash).unwrap());
+        assert!(!verify_password("wrong", &made.salt, &made.hash).unwrap());
     }
 
     #[test]

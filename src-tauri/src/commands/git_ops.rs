@@ -1,3 +1,4 @@
+use crate::crypto::CRYPTO_META_FILE;
 use crate::error::{AppError, AppResult};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -36,6 +37,58 @@ fn open_repo(root: &str) -> AppResult<git2::Repository> {
     })
 }
 
+/// Note files on disk must be ciphertext (NW1); skip meta / readme / non-notes.
+fn assert_notes_are_ciphertext(root: &Path) -> AppResult<()> {
+    for entry in walkdir::WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let rel = match path.strip_prefix(root) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let first = rel
+            .components()
+            .next()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .unwrap_or_default();
+        if first == ".git" || first.starts_with('.') {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        if name == CRYPTO_META_FILE || name.eq_ignore_ascii_case("readme.md") {
+            continue;
+        }
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        if !matches!(ext.as_str(), "md" | "markdown" | "txt") {
+            continue;
+        }
+        let mut magic = [0u8; 3];
+        let Ok(mut f) = std::fs::File::open(path) else {
+            continue;
+        };
+        use std::io::Read;
+        if f.read(&mut magic).ok() != Some(3) || &magic != b"NW1" {
+            return Err(AppError::new(
+                "CRYPTO_ERROR",
+                format!(
+                    "发现未加密明文笔记：{}。请先解锁并保存/密封后再提交",
+                    rel.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn status_label(flags: git2::Status) -> (String, bool) {
     if flags.is_index_new() {
         return ("已暂存".into(), true);
@@ -60,7 +113,12 @@ fn status_label(flags: git2::Status) -> (String, bool) {
 
 #[tauri::command]
 pub fn git_init(root: String) -> AppResult<()> {
-    git2::Repository::init(&root)?;
+    let path = PathBuf::from(&root);
+    std::fs::create_dir_all(&path)?;
+    if path.join(".git").exists() {
+        return Ok(());
+    }
+    git2::Repository::init(&path)?;
     Ok(())
 }
 
@@ -124,7 +182,6 @@ fn compute_ahead_behind(repo: &git2::Repository) -> AppResult<(u32, u32)> {
 
 fn signature(repo: &git2::Repository) -> AppResult<git2::Signature<'static>> {
     if let Ok(sig) = repo.signature() {
-        // Convert to owned by re-creating
         return Ok(git2::Signature::now(
             sig.name().unwrap_or("Note User"),
             sig.email().unwrap_or("note@local"),
@@ -133,15 +190,23 @@ fn signature(repo: &git2::Repository) -> AppResult<git2::Signature<'static>> {
     Ok(git2::Signature::now("Note User", "note@local")?)
 }
 
+/// Commit encrypted notes already on disk (no work↔vault sync).
 #[tauri::command]
 pub fn git_commit(root: String, message: String) -> AppResult<String> {
     let msg = message.trim();
     if msg.is_empty() {
         return Err(AppError::new("INVALID_ARGUMENT", "commit message is empty"));
     }
+    let path = PathBuf::from(&root);
+    assert_notes_are_ciphertext(&path)?;
+
     let repo = open_repo(&root)?;
     let mut index = repo.index()?;
-    index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
+    index.add_all(["*", ".*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
+    let meta = path.join(CRYPTO_META_FILE);
+    if meta.exists() {
+        let _ = index.add_path(Path::new(CRYPTO_META_FILE));
+    }
     index.write()?;
     let tree_id = index.write_tree()?;
     let tree = repo.find_tree(tree_id)?;
@@ -241,6 +306,7 @@ fn inject_token_if_needed(url: &str, token: Option<&str>) -> String {
     url.to_string()
 }
 
+/// Clone remote into dest (workspace root). Notes stay encrypted; UI decrypts on open.
 #[tauri::command]
 pub fn git_clone(url: String, dest: String) -> AppResult<()> {
     if url.trim().is_empty() || dest.trim().is_empty() {
@@ -256,7 +322,6 @@ pub fn git_clone(url: String, dest: String) -> AppResult<()> {
     Ok(())
 }
 
-/// 读取 origin 远程地址（可能含 oauth2 Token）
 #[tauri::command]
 pub fn git_get_remote(root: String) -> AppResult<Option<String>> {
     let repo = open_repo(&root)?;
@@ -267,7 +332,6 @@ pub fn git_get_remote(root: String) -> AppResult<Option<String>> {
     Ok(remote.url().map(|s| s.to_string()))
 }
 
-/// 将完整 Git 地址（可含 Token）写入 origin，可直接 push/pull
 #[tauri::command]
 pub fn git_set_remote(root: String, url: String) -> AppResult<()> {
     let url = url.trim().to_string();
@@ -298,9 +362,244 @@ pub fn git_set_remote(root: String, url: String) -> AppResult<()> {
 
 #[tauri::command]
 pub fn git_push(root: String, token: Option<String>) -> AppResult<()> {
+    assert_notes_are_ciphertext(Path::new(&root))?;
     let repo = open_repo(&root)?;
     maybe_rewrite_origin(&repo, token.as_deref())?;
-    run_git(&["push"], Some(Path::new(&root)))?;
+    let cwd = Path::new(&root);
+    if !has_any_commit(cwd) {
+        return Err(AppError::new(
+            "GIT_ERROR",
+            "本地尚无提交，请先提交后再推送",
+        ));
+    }
+    let branch = current_branch_name(cwd);
+    match run_git(&["push"], Some(cwd)) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let msg = e.message.to_lowercase();
+            if msg.contains("no upstream")
+                || msg.contains("has no upstream")
+                || msg.contains("set the remote as upstream")
+                || msg.contains("does not have a tracking")
+                || msg.contains("ambiguous argument 'head'")
+            {
+                run_git(&["push", "-u", "origin", &branch], Some(cwd))?;
+                Ok(())
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+fn remote_default_branch(cwd: &Path) -> AppResult<String> {
+    if let Ok(out) = run_git(&["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], Some(cwd)) {
+        let s = out.trim();
+        if let Some(name) = s.strip_prefix("origin/") {
+            if !name.is_empty() {
+                return Ok(name.to_string());
+            }
+        }
+    }
+    for name in ["main", "master"] {
+        let spec = format!("refs/remotes/origin/{name}");
+        if run_git(&["show-ref", "--verify", "--quiet", &spec], Some(cwd)).is_ok() {
+            return Ok(name.to_string());
+        }
+    }
+    if let Ok(out) = run_git(&["branch", "-r", "--format=%(refname:short)"], Some(cwd)) {
+        for line in out.lines() {
+            let t = line.trim();
+            if let Some(name) = t.strip_prefix("origin/") {
+                if name != "HEAD" && !name.is_empty() {
+                    return Ok(name.to_string());
+                }
+            }
+        }
+    }
+    Ok("master".into())
+}
+
+fn has_any_commit(cwd: &Path) -> bool {
+    run_git(&["rev-parse", "--verify", "HEAD"], Some(cwd)).is_ok()
+}
+
+fn current_branch_name(cwd: &Path) -> String {
+    if let Ok(out) = run_git(&["branch", "--show-current"], Some(cwd)) {
+        let name = out.trim();
+        if !name.is_empty() {
+            return name.to_string();
+        }
+    }
+    if let Ok(out) = run_git(&["symbolic-ref", "--short", "HEAD"], Some(cwd)) {
+        let name = out.trim();
+        if !name.is_empty() {
+            return name.to_string();
+        }
+    }
+    "master".into()
+}
+
+fn has_upstream(cwd: &Path) -> bool {
+    if !has_any_commit(cwd) {
+        return false;
+    }
+    run_git(
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        Some(cwd),
+    )
+    .is_ok()
+}
+
+/// Remove local untracked files that would block checkout of `remote_ref`
+/// (common case: local `.nw-crypto.json` created by project_init before first pull).
+fn remove_untracked_conflicts_with_remote(cwd: &Path, remote_ref: &str) -> AppResult<()> {
+    let remote_list =
+        run_git(&["ls-tree", "-r", "--name-only", remote_ref], Some(cwd)).unwrap_or_default();
+    let untracked =
+        run_git(&["ls-files", "--others", "--exclude-standard"], Some(cwd)).unwrap_or_default();
+
+    let remote_set: std::collections::HashSet<String> = remote_list
+        .lines()
+        .map(|l| l.trim().replace('\\', "/"))
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    for line in untracked.lines() {
+        let rel = line.trim().replace('\\', "/");
+        if rel.is_empty() || !remote_set.contains(&rel) {
+            continue;
+        }
+        let path = cwd.join(Path::new(&rel));
+        if path.is_file() {
+            let _ = std::fs::remove_file(&path);
+        } else if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+    }
+    Ok(())
+}
+
+fn checkout_remote_branch(cwd: &Path, branch: &str, remote_ref: &str) -> AppResult<()> {
+    remove_untracked_conflicts_with_remote(cwd, remote_ref)?;
+    match run_git(&["checkout", "-B", branch, remote_ref], Some(cwd)) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let msg = e.message.to_lowercase();
+            if msg.contains("would be overwritten") || msg.contains("untracked working tree") {
+                // Parse again / force-clean known blockers then retry once
+                remove_untracked_conflicts_with_remote(cwd, remote_ref)?;
+                // Also drop local crypto meta if still blocking
+                let meta = cwd.join(CRYPTO_META_FILE);
+                if meta.exists() {
+                    let tracked = run_git(
+                        &["ls-files", "--error-unmatch", CRYPTO_META_FILE],
+                        Some(cwd),
+                    )
+                    .is_ok();
+                    if !tracked {
+                        let _ = std::fs::remove_file(&meta);
+                    }
+                }
+                run_git(&["checkout", "-B", branch, remote_ref], Some(cwd))?;
+                Ok(())
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+fn pull_rebase(cwd: &Path) -> AppResult<()> {
+    run_git(&["fetch", "origin"], Some(cwd))?;
+    let _ = run_git(&["remote", "set-head", "origin", "-a"], Some(cwd));
+
+    let remote_branch = remote_default_branch(cwd)?;
+    let remote_ref = format!("origin/{remote_branch}");
+
+    if !has_any_commit(cwd) {
+        if run_git(
+            &[
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/remotes/{remote_ref}"),
+            ],
+            Some(cwd),
+        )
+        .is_err()
+            && run_git(&["rev-parse", "--verify", &remote_ref], Some(cwd)).is_err()
+        {
+            return Err(AppError::new(
+                "GIT_ERROR",
+                format!("远程没有可用分支 origin/{remote_branch}，请确认仓库地址与权限"),
+            ));
+        }
+        checkout_remote_branch(cwd, &remote_branch, &remote_ref)?;
+        let _ = run_git(
+            &[
+                "branch",
+                &format!("--set-upstream-to={remote_ref}"),
+                &remote_branch,
+            ],
+            Some(cwd),
+        );
+        return Ok(());
+    }
+
+    if has_upstream(cwd) {
+        return match run_git(&["pull", "--rebase"], Some(cwd)) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let msg = e.message.to_lowercase();
+                if msg.contains("would be overwritten") || msg.contains("untracked working tree") {
+                    remove_untracked_conflicts_with_remote(cwd, &remote_ref)?;
+                    run_git(&["pull", "--rebase"], Some(cwd)).map(|_| ())
+                } else {
+                    Err(e)
+                }
+            }
+        };
+    }
+
+    let local = current_branch_name(cwd);
+
+    match run_git(
+        &["pull", "--rebase", "origin", &remote_branch],
+        Some(cwd),
+    ) {
+        Ok(_) => {}
+        Err(e) => {
+            let msg = e.message.to_lowercase();
+            if msg.contains("unrelated histories") || msg.contains("refusing to merge") {
+                remove_untracked_conflicts_with_remote(cwd, &remote_ref)?;
+                run_git(
+                    &[
+                        "pull",
+                        "--rebase",
+                        "origin",
+                        &remote_branch,
+                        "--allow-unrelated-histories",
+                    ],
+                    Some(cwd),
+                )?;
+            } else if msg.contains("no tracking")
+                || msg.contains("tracking information")
+                || msg.contains("ambiguous argument")
+                || msg.contains("would be overwritten")
+                || msg.contains("untracked working tree")
+            {
+                checkout_remote_branch(cwd, &local, &remote_ref)?;
+            } else {
+                return Err(e);
+            }
+        }
+    }
+
+    let _ = run_git(
+        &["branch", &format!("--set-upstream-to={remote_ref}"), &local],
+        Some(cwd),
+    );
     Ok(())
 }
 
@@ -308,7 +607,7 @@ pub fn git_push(root: String, token: Option<String>) -> AppResult<()> {
 pub fn git_pull(root: String, token: Option<String>) -> AppResult<()> {
     let repo = open_repo(&root)?;
     maybe_rewrite_origin(&repo, token.as_deref())?;
-    run_git(&["pull", "--rebase"], Some(Path::new(&root)))?;
+    pull_rebase(Path::new(&root))?;
     Ok(())
 }
 
@@ -357,5 +656,14 @@ mod tests {
         git_set_remote(root.clone(), url.clone()).unwrap();
         let got = git_get_remote(root).unwrap();
         assert_eq!(got.as_deref(), Some(url.as_str()));
+    }
+
+    #[test]
+    fn git_init_any_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let notes = dir.path().join("notes");
+        fs::create_dir_all(&notes).unwrap();
+        git_init(notes.to_string_lossy().to_string()).unwrap();
+        assert!(notes.join(".git").exists());
     }
 }

@@ -12,7 +12,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  'context-menu': [payload: { path: string; x: number; y: number }]
+  'context-menu': [payload: { path: string; isDir: boolean; x: number; y: number }]
 }>()
 
 const editor = useEditorStore()
@@ -54,7 +54,12 @@ async function onClick(e: MouseEvent) {
 function onContext(e: MouseEvent) {
   e.preventDefault()
   e.stopPropagation()
-  emit('context-menu', { path: props.node.path, x: e.clientX, y: e.clientY })
+  emit('context-menu', {
+    path: props.node.path,
+    isDir: props.node.isDir,
+    x: e.clientX,
+    y: e.clientY,
+  })
 }
 
 function onPointerDown(e: PointerEvent) {

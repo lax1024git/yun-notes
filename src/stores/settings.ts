@@ -51,12 +51,22 @@ export const useSettingsStore = defineStore('settings', () => {
     lockHash.value = made.hash
     lockEnabled.value = true
     unlocked.value = true
+    await api.lock.sessionSet(password)
     await persistLock()
   }
 
-  async function changeLockPassword(current: string, next: string) {
+  async function changeLockPassword(
+    current: string,
+    next: string,
+    workspaceRoot?: string | null,
+  ) {
     const ok = await api.lock.verify(current, lockSalt.value, lockHash.value)
     if (!ok) throw new Error('当前密码不正确')
+    if (workspaceRoot) {
+      await api.sync.rekeyWorkspace(workspaceRoot, next)
+    } else {
+      await api.lock.sessionSet(next)
+    }
     const made = await api.lock.hash(next)
     lockSalt.value = made.salt
     lockHash.value = made.hash
@@ -72,6 +82,7 @@ export const useSettingsStore = defineStore('settings', () => {
     lockSalt.value = ''
     lockHash.value = ''
     unlocked.value = true
+    await api.lock.sessionClear()
     await persistLock()
   }
 
