@@ -85,7 +85,7 @@ async function onCopy() {
       v-model="text"
       class="editor"
       spellcheck="false"
-      placeholder='粘贴 JSON，例如 {"name":"笔记"}'
+      placeholder="粘贴 JSON（支持 // 与 /* */ 注释）"
     />
     <div class="actions">
       <button type="button" class="primary" @click="onFormat">校验 / 格式化</button>

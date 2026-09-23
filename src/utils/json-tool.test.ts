@@ -22,6 +22,28 @@ describe('json-tool', () => {
     expect(unescapeJson(esc)).toBe(inner)
   })
 
+  it('formats json with line comments', () => {
+    const raw = `{
+      "level": 0, //等级
+      "status": 1, //用户状态
+      "url": "https://example.com/path//keep"
+    }`
+    const out = formatJson(raw)
+    expect(JSON.parse(out)).toEqual({
+      level: 0,
+      status: 1,
+      url: 'https://example.com/path//keep',
+    })
+  })
+
+  it('formats json with block comments and trailing commas', () => {
+    const raw = `{
+      "a": 1, /* note */
+      "b": [2, 3,],
+    }`
+    expect(JSON.parse(formatJson(raw))).toEqual({ a: 1, b: [2, 3] })
+  })
+
   it('unicode round-trip for chinese', () => {
     const s = '你好'
     const u = chineseToUnicode(s)

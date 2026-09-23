@@ -1,6 +1,111 @@
-/** Try to parse JSON; also accept a JSON string literal wrapping JSON. */
+/**
+ * Strip JSONC-style comments (`//` and block comments) without touching string contents.
+ * Also removes trailing commas before `}` / `]` (common in commented API samples).
+ */
+export function stripJsonComments(raw: string): string {
+  let out = ''
+  let i = 0
+  const n = raw.length
+
+  while (i < n) {
+    const ch = raw[i]!
+    const next = i + 1 < n ? raw[i + 1]! : ''
+
+    // String literal
+    if (ch === '"') {
+      out += ch
+      i += 1
+      while (i < n) {
+        const c = raw[i]!
+        out += c
+        if (c === '\\') {
+          if (i + 1 < n) {
+            out += raw[i + 1]
+            i += 2
+            continue
+          }
+        } else if (c === '"') {
+          i += 1
+          break
+        }
+        i += 1
+      }
+      continue
+    }
+
+    // Line comment //
+    if (ch === '/' && next === '/') {
+      i += 2
+      while (i < n && raw[i] !== '\n' && raw[i] !== '\r') i += 1
+      continue
+    }
+
+    // Block comment /* */
+    if (ch === '/' && next === '*') {
+      i += 2
+      while (i + 1 < n && !(raw[i] === '*' && raw[i + 1] === '/')) i += 1
+      i = Math.min(i + 2, n)
+      // Keep a space so tokens don't glue together
+      out += ' '
+      continue
+    }
+
+    out += ch
+    i += 1
+  }
+
+  return stripTrailingCommas(out)
+}
+
+/** Remove commas that appear right before `}` or `]`. */
+function stripTrailingCommas(text: string): string {
+  let out = ''
+  let i = 0
+  const n = text.length
+
+  while (i < n) {
+    const ch = text[i]!
+
+    if (ch === '"') {
+      out += ch
+      i += 1
+      while (i < n) {
+        const c = text[i]!
+        out += c
+        if (c === '\\') {
+          if (i + 1 < n) {
+            out += text[i + 1]
+            i += 2
+            continue
+          }
+        } else if (c === '"') {
+          i += 1
+          break
+        }
+        i += 1
+      }
+      continue
+    }
+
+    if (ch === ',') {
+      let j = i + 1
+      while (j < n && /[\s\r\n]/.test(text[j]!)) j += 1
+      if (j < n && (text[j] === '}' || text[j] === ']')) {
+        i += 1
+        continue
+      }
+    }
+
+    out += ch
+    i += 1
+  }
+
+  return out
+}
+
+/** Try to parse JSON; accepts JSONC comments and a JSON string literal wrapping JSON. */
 export function parseJsonFlexible(raw: string): unknown {
-  const text = raw.trim()
+  const text = stripJsonComments(raw).trim()
   if (!text) throw new Error('内容为空')
   try {
     return JSON.parse(text)
@@ -8,7 +113,7 @@ export function parseJsonFlexible(raw: string): unknown {
     // Sometimes pasted content is a quoted JSON string
     try {
       const once = JSON.parse(text)
-      if (typeof once === 'string') return JSON.parse(once)
+      if (typeof once === 'string') return JSON.parse(stripJsonComments(once))
     } catch {
       /* fall through */
     }
