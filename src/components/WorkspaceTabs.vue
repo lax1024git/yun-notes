@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { open as pickDirectory } from '@tauri-apps/plugin-dialog'
-import { useWorkspaceStore } from '../stores/workspace'
+import { tabHasOwnCrypto, useWorkspaceStore } from '../stores/workspace'
 import { useToastStore } from '../stores/toast'
 import { errorMessage } from '../api/tauri'
 import WorkspaceTabSettings from './WorkspaceTabSettings.vue'
@@ -25,6 +25,16 @@ function asPath(selected: string | string[] | null): string | null {
   return null
 }
 
+function bindToast(path: string, tabId: string) {
+  const tab = workspace.tabs.find((t) => t.id === tabId)
+  const leaf = path.split(/[/\\]/).pop()
+  if (tab && tabHasOwnCrypto(tab)) {
+    toast.success(`已打开项目：${leaf}（加密密码已配置）`)
+  } else {
+    toast.success(`已打开项目：${leaf}，请先设置加密密码`)
+  }
+}
+
 /** Like a browser: create tab first, then attach a git project folder */
 async function addWorkspace() {
   if (picking.value) return
@@ -42,7 +52,7 @@ async function addWorkspace() {
       return
     }
     await workspace.bindTabPath(id, path)
-    toast.success(`已打开项目：${path.split(/[/\\]/).pop()}`)
+    bindToast(path, id)
   } catch (e) {
     toast.error(errorMessage(e))
   } finally {
@@ -53,6 +63,7 @@ async function addWorkspace() {
 async function pickForActive() {
   if (!workspace.activeId || picking.value) return
   picking.value = true
+  const id = workspace.activeId
   try {
     const selected = await pickDirectory({
       directory: true,
@@ -61,8 +72,8 @@ async function pickForActive() {
     })
     const path = asPath(selected)
     if (!path) return
-    await workspace.bindTabPath(workspace.activeId, path)
-    toast.success(`已绑定项目：${path.split(/[/\\]/).pop()}`)
+    await workspace.bindTabPath(id, path)
+    bindToast(path, workspace.activeId || id)
   } catch (e) {
     toast.error(errorMessage(e))
   } finally {
@@ -78,9 +89,17 @@ async function onSwitch(id: string) {
   }
 }
 
-function openSettings(id: string, e?: Event) {
+async function openSettings(id: string, e?: Event) {
   e?.stopPropagation()
   e?.preventDefault()
+  const tab = workspace.tabs.find((t) => t.id === id)
+  if (tab) {
+    try {
+      await workspace.syncTabCryptoFromVault(tab)
+    } catch {
+      /* ignore */
+    }
+  }
   settingsId.value = id
 }
 
@@ -97,6 +116,15 @@ const showEmpty = computed(() => {
   const t = workspace.activeTab
   return !!t && !t.path.trim()
 })
+
+/** Explicit dependency on each tab's crypto fields so first paint shows「密」. */
+const cryptoOnById = computed(() => {
+  const map: Record<string, boolean> = {}
+  for (const t of workspace.tabs) {
+    map[t.id] = !!(t.cryptoSalt && t.cryptoHash)
+  }
+  return map
+})
 </script>
 
 <template>
@@ -112,6 +140,11 @@ const showEmpty = computed(() => {
         @click="onSwitch(tab.id)"
         @dblclick="openSettings(tab.id)"
       >
+        <span
+          v-if="cryptoOnById[tab.id]"
+          class="crypto-mark"
+          title="此工作区已设置加密密码"
+        >密</span>
         <span class="name">{{ tab.name }}</span>
         <span class="actions">
           <button
@@ -148,7 +181,7 @@ const showEmpty = computed(() => {
         <div class="eyebrow">NEW TAB</div>
         <h3>打开一个独立的 Git 项目</h3>
         <p class="muted">
-          每个标签页对应一个本地仓库目录与可选远程地址，互不影响。
+          每个标签页对应一个本地仓库。绑定目录后须先设置加密密码，才能读写笔记。
         </p>
         <div class="row">
           <button type="button" class="primary" :disabled="picking" @click="pickForActive">
@@ -204,6 +237,23 @@ const showEmpty = computed(() => {
   font-style: italic;
   opacity: 0.85;
 }
+.crypto-mark {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.1rem;
+  height: 1.1rem;
+  padding: 0 0.2rem;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  color: var(--bg);
+  background: var(--accent);
+}
 .tab .name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -231,50 +281,42 @@ const showEmpty = computed(() => {
   opacity: 1;
 }
 .icon-btn:hover {
-  background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
 }
 .add {
   border: none;
   background: transparent;
-  color: var(--accent);
-  font-size: 1.25rem;
-  min-width: 40px;
-  padding: 0 0.75rem;
-  border-radius: 0;
-  font-weight: 700;
-  flex-shrink: 0;
+  color: var(--muted);
+  padding: 0 0.85rem;
+  font-size: 1.1rem;
+  font-family: var(--font-mono);
+  cursor: pointer;
 }
 .add:hover:not(:disabled) {
-  background: var(--accent-soft);
+  color: var(--accent);
 }
 .add:disabled {
   opacity: 0.5;
+  cursor: wait;
 }
 .empty-pane {
   padding: 1.25rem 1rem 1.5rem;
   border-top: 1px dashed var(--border);
-  background: color-mix(in srgb, var(--bg) 40%, transparent);
 }
 .empty-card {
   max-width: 420px;
   margin: 0 auto;
-  text-align: center;
-  gap: 0.55rem;
 }
 .eyebrow {
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: 0.62rem;
   letter-spacing: 0.14em;
   color: var(--accent);
 }
 .empty-card h3 {
-  margin: 0;
+  margin: 0.15rem 0 0;
   font-size: 1.05rem;
-}
-.empty-card .row {
-  justify-content: center;
-  flex-wrap: wrap;
-  margin-top: 0.35rem;
+  font-family: var(--font-mono);
 }
 </style>

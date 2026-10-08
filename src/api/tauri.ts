@@ -44,6 +44,14 @@ export const api = {
   sync: {
     rekeyWorkspace: (root: string, newPassword: string) =>
       invoke<void>('rekey_workspace', { root, newPassword }),
+    vaultGetVerify: (root: string) =>
+      invoke<{ salt: string; hash: string } | null>('crypto_vault_get_verify', { root }),
+    vaultSetVerify: (root: string, salt: string, hash: string) =>
+      invoke<void>('crypto_vault_set_verify', { root, salt, hash }),
+    vaultClearVerify: (root: string) =>
+      invoke<void>('crypto_vault_clear_verify', { root }),
+    vaultTryUnlock: (root: string, password: string) =>
+      invoke<boolean>('crypto_vault_try_unlock', { root, password }),
   },
   git: {
     init: (root: string) => invoke<void>('git_init', { root }),

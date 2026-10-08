@@ -14,6 +14,7 @@ const inputRef = ref<HTMLInputElement | null>(null)
 
 const tab = computed(() => workspace.pendingCryptoUnlockTab)
 const open = computed(() => !!tab.value)
+/** First-time: no verify on tab yet — must set before using the workspace */
 const isSetup = computed(() => !!tab.value && !tabHasOwnCrypto(tab.value))
 
 watch(open, async (v) => {
@@ -27,6 +28,11 @@ watch(open, async (v) => {
 
 function onClose() {
   if (busy.value) return
+  // New tab / first setup: cannot skip — must set encryption password
+  if (isSetup.value) {
+    error.value = '首次打开此工作区必须先设置加密密码'
+    return
+  }
   workspace.dismissPendingCrypto()
   password.value = ''
   password2.value = ''
@@ -103,6 +109,7 @@ async function submit() {
             <h2>{{ isSetup ? '设置工作区加密密码' : '解锁工作区加密' }}</h2>
           </div>
           <button
+            v-if="!isSetup"
             type="button"
             class="icon-close"
             aria-label="关闭"
@@ -114,15 +121,17 @@ async function submit() {
         </div>
         <p class="muted">
           <template v-if="isSetup">
-            「{{ tab.name }}」尚未绑定笔记加密密码。若目录里已有加密笔记，请在「原加密密码」填入当初加密时的密码（与启动密码锁无关）。
+            首次添加 / 打开「{{ tab.name }}」须先设置加密密码，完成后才会启用笔记读写。
+            本机将自动记住密码；校验信息写入 <code>.nw-crypto.json</code> 便于多机同步。
+            若目录里已有加密笔记，请在「原加密密码」填入当初的密码。
           </template>
           <template v-else>
-            「{{ tab.name }}」的笔记加密密码与启动锁无关，请输入此工作区的加密密码。
+            「{{ tab.name }}」需要解锁。本机若曾设置过密码会自动解锁；否则请手动输入。
           </template>
         </p>
 
         <label v-if="isSetup" class="stack">
-          <span class="tech-label">原加密密码（已有加密笔记时必填；全新空目录可留空）</span>
+          <span class="tech-label">原加密密码（已有加密笔记时必填；全新目录可留空）</span>
           <input
             v-model="currentPassword"
             type="password"
@@ -158,7 +167,7 @@ async function submit() {
           <button type="submit" class="primary" :disabled="busy">
             {{ isSetup ? '保存并启用加密' : '解锁此工作区' }}
           </button>
-          <button type="button" :disabled="busy" @click="onClose">关闭</button>
+          <button v-if="!isSetup" type="button" :disabled="busy" @click="onClose">关闭</button>
         </div>
       </form>
     </div>

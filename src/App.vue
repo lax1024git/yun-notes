@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { open as pickDirectory } from '@tauri-apps/plugin-dialog'
 import AppToolbar from './components/layout/AppToolbar.vue'
@@ -34,10 +34,18 @@ const showPreview = computed(
 )
 
 async function enterApp() {
-  if (bootstrapped.value) return
+  const needReload = !workspace.tree.length && !!workspace.activeTab?.path?.trim()
+  if (bootstrapped.value && !needReload) return
   bootstrapped.value = true
   await workspace.restoreLast()
 }
+
+watch(
+  () => settings.needsUnlock,
+  async (need, prev) => {
+    if (prev && !need) await enterApp()
+  },
+)
 
 onMounted(async () => {
   await settings.load()

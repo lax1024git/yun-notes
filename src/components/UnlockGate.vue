@@ -38,15 +38,19 @@ async function submit() {
 
   busy.value = true
   try {
-    const ok = await settings.unlock(password.value)
+    const ok = await settings.verifyLockPassword(password.value)
     if (!ok) {
       error.value = '密码错误'
       password.value = ''
       await nextTick(() => inputRef.value?.focus())
       return
     }
+    // Load tabs + file tree BEFORE flipping the lock, otherwise UnlockGate
+    // unmounts and `unlocked` never reaches App (empty tree until you switch Tab).
     await workspace.loadTabs()
     await workspace.seedSharedCryptoFromUnlock(password.value)
+    await workspace.restoreLast()
+    await settings.unlock(password.value)
     password.value = ''
     emit('unlocked')
   } catch (e) {

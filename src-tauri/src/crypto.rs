@@ -22,6 +22,12 @@ const SALT_LEN: usize = 16;
 pub struct CryptoMeta {
     pub version: u32,
     pub salt: String,
+    /// SHA-256 verify salt for the vault password (persisted with the workspace folder).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_salt: Option<String>,
+    /// SHA-256(verify_salt || password) hex — travels with the folder across PCs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_hash: Option<String>,
 }
 
 impl CryptoMeta {
@@ -31,12 +37,21 @@ impl CryptoMeta {
         Ok(Self {
             version: 1,
             salt: hex::encode(salt),
+            verify_salt: None,
+            verify_hash: None,
         })
     }
 
     pub fn salt_bytes(&self) -> AppResult<Vec<u8>> {
         hex::decode(self.salt.trim())
             .map_err(|_| AppError::new("CRYPTO_ERROR", "invalid crypto salt"))
+    }
+
+    pub fn has_verify(&self) -> bool {
+        matches!(
+            (&self.verify_salt, &self.verify_hash),
+            (Some(s), Some(h)) if !s.is_empty() && !h.is_empty()
+        )
     }
 }
 
@@ -170,11 +185,33 @@ pub fn key_for_vault(password: &str, vault: &Path) -> AppResult<[u8; KEY_LEN]> {
 }
 
 /// Replace vault salt and return a key derived from the new password.
+/// Preserves password-verify fields so they can be updated by the caller.
 pub fn rotate_meta_and_key(password: &str, vault: &Path) -> AppResult<[u8; KEY_LEN]> {
-    let meta = CryptoMeta::new_random()?;
+    let prev = load_meta(vault)?;
+    let mut meta = CryptoMeta::new_random()?;
+    if let Some(p) = prev {
+        meta.verify_salt = p.verify_salt;
+        meta.verify_hash = p.verify_hash;
+    }
     save_meta(vault, &meta)?;
     let salt = meta.salt_bytes()?;
     derive_key(password, &salt)
+}
+
+pub fn set_meta_verify(vault: &Path, verify_salt: String, verify_hash: String) -> AppResult<()> {
+    let mut meta = load_or_create_meta(vault)?;
+    meta.verify_salt = Some(verify_salt);
+    meta.verify_hash = Some(verify_hash);
+    save_meta(vault, &meta)
+}
+
+pub fn clear_meta_verify(vault: &Path) -> AppResult<()> {
+    let Some(mut meta) = load_meta(vault)? else {
+        return Ok(());
+    };
+    meta.verify_salt = None;
+    meta.verify_hash = None;
+    save_meta(vault, &meta)
 }
 
 #[cfg(test)]

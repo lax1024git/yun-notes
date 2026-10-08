@@ -36,13 +36,19 @@ const maskedRemote = computed(() =>
 
 watch(
   () => [open.value, props.tabId] as const,
-  ([isOpen]) => {
+  async ([isOpen]) => {
     if (!isOpen || !tab.value) return
     name.value = tab.value.name
     remoteUrl.value = tab.value.remoteUrl
     cryptoCurrent.value = ''
     cryptoPwd.value = ''
     cryptoPwd2.value = ''
+    // Pull verify from folder so「已设置」不必先切换 Tab
+    try {
+      await workspace.syncTabCryptoFromVault(tab.value)
+    } catch {
+      /* ignore */
+    }
   },
   { immediate: true },
 )
@@ -244,8 +250,22 @@ async function saveCryptoPassword() {
 
 async function clearOwnCrypto() {
   if (!tab.value || !hasOwnCrypto.value) return
-  await workspace.clearTabOwnCrypto(tab.value.id)
-  toast.success('已清除此工作区加密密码配置（需重新设置后才能读写加密笔记）')
+  if (!cryptoCurrent.value) {
+    toast.error('清除密码只需填写「当前加密密码」')
+    return
+  }
+  cryptoBusy.value = true
+  try {
+    await workspace.clearTabOwnCrypto(tab.value.id, cryptoCurrent.value)
+    cryptoCurrent.value = ''
+    cryptoPwd.value = ''
+    cryptoPwd2.value = ''
+    toast.success('已清除加密密码配置（磁盘笔记仍为密文，需重新设置密码后才能读写）')
+  } catch (e) {
+    toast.error(errorMessage(e))
+  } finally {
+    cryptoBusy.value = false
+  }
 }
 </script>
 
@@ -273,7 +293,10 @@ async function clearOwnCrypto() {
           <h3>笔记加密密码</h3>
           <p class="muted tip">
             此工作区的笔记加密密码（与其他 Tab、启动锁均无关）。当前：
-            <strong>{{ hasOwnCrypto ? '已设置' : '未设置' }}</strong>
+            <strong class="crypto-state" :data-on="hasOwnCrypto ? '1' : '0'">
+              {{ hasOwnCrypto ? '已设置' : '未设置' }}
+            </strong>
+            。清除配置时只需填写「当前加密密码」。
           </p>
           <label v-if="hasOwnCrypto" class="stack">
             <span class="muted">当前加密密码</span>
@@ -303,7 +326,7 @@ async function clearOwnCrypto() {
             <button
               v-if="hasOwnCrypto"
               type="button"
-              :disabled="cryptoBusy"
+              :disabled="cryptoBusy || !cryptoCurrent"
               @click="clearOwnCrypto"
             >
               清除密码配置
@@ -390,6 +413,12 @@ async function clearOwnCrypto() {
   line-height: 1;
   padding: 0.15rem 0.45rem;
   color: var(--muted);
+}
+.crypto-state[data-on='1'] {
+  color: var(--accent);
+}
+.crypto-state[data-on='0'] {
+  color: var(--danger);
 }
 h2 {
   margin: 0;

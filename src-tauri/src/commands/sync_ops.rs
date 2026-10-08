@@ -185,3 +185,119 @@ pub fn rekey_vault_from_work(
     };
     rekey_workspace_inner(&root, new_password, &session)
 }
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultVerify {
+    pub salt: String,
+    pub hash: String,
+}
+
+/// Read password-verify fields from workspace `.nw-crypto.json` (survives across PCs).
+#[tauri::command]
+pub fn crypto_vault_get_verify(root: String) -> AppResult<Option<VaultVerify>> {
+    let dir = PathBuf::from(&root);
+    let Some(meta) = crypto::load_meta(&dir)? else {
+        return Ok(None);
+    };
+    match (meta.verify_salt, meta.verify_hash) {
+        (Some(salt), Some(hash)) if !salt.is_empty() && !hash.is_empty() => {
+            Ok(Some(VaultVerify { salt, hash }))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Persist password-verify into workspace `.nw-crypto.json`.
+#[tauri::command]
+pub fn crypto_vault_set_verify(root: String, salt: String, hash: String) -> AppResult<()> {
+    if salt.trim().is_empty() || hash.trim().is_empty() {
+        return Err(AppError::new("INVALID_ARGUMENT", "verify salt/hash empty"));
+    }
+    let dir = PathBuf::from(&root);
+    crypto::set_meta_verify(&dir, salt.trim().to_string(), hash.trim().to_string())
+}
+
+/// Remove password-verify fields from workspace `.nw-crypto.json` (keeps vault salt).
+#[tauri::command]
+pub fn crypto_vault_clear_verify(root: String) -> AppResult<()> {
+    let dir = PathBuf::from(&root);
+    crypto::clear_meta_verify(&dir)
+}
+
+/// Unlock vault with password (verify hash and/or decrypt sample). Sets crypto session on success.
+#[tauri::command]
+pub fn crypto_vault_try_unlock(
+    root: String,
+    password: String,
+    session: tauri::State<'_, SharedCryptoSession>,
+) -> AppResult<bool> {
+    if password.chars().count() < 4 {
+        return Ok(false);
+    }
+    let dir = PathBuf::from(&root);
+    if !dir.is_dir() {
+        return Err(AppError::new(
+            "NOT_FOUND",
+            format!("workspace not found: {root}"),
+        ));
+    }
+
+    if let Some(meta) = crypto::load_meta(&dir)? {
+        if meta.has_verify() {
+            let salt = meta.verify_salt.as_deref().unwrap_or("");
+            let hash = meta.verify_hash.as_deref().unwrap_or("");
+            let ok = crate::commands::app_lock::verify_password(&password, salt, hash)?;
+            if !ok {
+                return Ok(false);
+            }
+            let mut guard = session
+                .lock()
+                .map_err(|_| AppError::new("INTERNAL", "crypto session lock poisoned"))?;
+            guard.set_password(password);
+            return Ok(true);
+        }
+    }
+
+    let key = match key_for_vault(&password, &dir) {
+        Ok(k) => k,
+        Err(_) => return Ok(false),
+    };
+    for entry in WalkDir::new(&dir)
+        .into_iter()
+        .filter_entry(|e| {
+            if e.path() == dir {
+                return true;
+            }
+            e.file_name()
+                .to_str()
+                .map(|n| !is_hidden_name(n))
+                .unwrap_or(true)
+        })
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        if !path.is_file() || !is_note_file(path) {
+            continue;
+        }
+        let Ok(raw) = fs::read(path) else { continue };
+        if raw.len() < 3 || &raw[..3] != b"NW1" {
+            continue;
+        }
+        if decrypt_bytes(&key, &raw).is_ok() {
+            let mut guard = session
+                .lock()
+                .map_err(|_| AppError::new("INTERNAL", "crypto session lock poisoned"))?;
+            guard.set_password(password);
+            return Ok(true);
+        }
+        return Ok(false);
+    }
+
+    // Empty / plaintext-only vault: accept password and seed session
+    let mut guard = session
+        .lock()
+        .map_err(|_| AppError::new("INTERNAL", "crypto session lock poisoned"))?;
+    guard.set_password(password);
+    Ok(true)
+}

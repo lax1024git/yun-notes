@@ -52,7 +52,7 @@ pub fn app_lock_verify(password: String, salt: String, hash: String) -> AppResul
     verify_password(&password, &salt, &hash)
 }
 
-fn verify_password(password: &str, salt: &str, hash: &str) -> AppResult<bool> {
+pub fn verify_password(password: &str, salt: &str, hash: &str) -> AppResult<bool> {
     if password.is_empty() || salt.is_empty() || hash.is_empty() {
         return Ok(false);
     }

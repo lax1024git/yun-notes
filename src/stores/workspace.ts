@@ -21,6 +21,11 @@ function samePath(a: string, b: string): boolean {
   return a.replace(/\\/g, '/').toLowerCase() === b.replace(/\\/g, '/').toLowerCase()
 }
 
+/** Normalize path for remembered-password map keys. */
+function pathKey(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+}
+
 function normalizeTab(t: Partial<WorkspaceTab> & { path?: string }): WorkspaceTab {
   return {
     id: t.id || newId(),
@@ -45,8 +50,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const dirty = ref(false)
   const loading = ref(false)
 
-  /** In-process plaintext passwords per tab (never persisted) */
+  /** In-process plaintext passwords per tab (never the only store) */
   const tabCryptoPasswords = new Map<string, string>()
+  /**
+   * Remembered vault passwords by workspace path (this machine only).
+   * Saved after first successful setup/unlock so next launch auto-unlocks.
+   */
+  const rememberedByPath = ref<Record<string, string>>({})
   /** Reactive unlock flags (Map alone is not reactive) */
   const unlockedTabIds = ref<Record<string, true>>({})
   /** Tab waiting for user to enter its encryption password */
@@ -112,10 +122,53 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     await store.save()
   }
 
+  async function loadRememberedPasswords() {
+    try {
+      const saved =
+        (await store.get<Record<string, string>>('rememberedWorkspaceCrypto')) ?? {}
+      rememberedByPath.value = saved && typeof saved === 'object' ? { ...saved } : {}
+    } catch {
+      rememberedByPath.value = {}
+    }
+  }
+
+  async function persistRememberedPasswords() {
+    try {
+      await store.set('rememberedWorkspaceCrypto', { ...rememberedByPath.value })
+      await store.save()
+    } catch (e) {
+      console.warn('persist remembered crypto failed', e)
+    }
+  }
+
+  async function rememberPathPassword(path: string, password: string) {
+    const key = pathKey(path)
+    if (!key || !password) return
+    if (rememberedByPath.value[key] === password) return
+    rememberedByPath.value = { ...rememberedByPath.value, [key]: password }
+    await persistRememberedPasswords()
+  }
+
+  async function forgetPathPassword(path: string) {
+    const key = pathKey(path)
+    if (!key || !rememberedByPath.value[key]) return
+    const next = { ...rememberedByPath.value }
+    delete next[key]
+    rememberedByPath.value = next
+    await persistRememberedPasswords()
+  }
+
+  function rememberedPasswordFor(path: string): string | undefined {
+    const key = pathKey(path)
+    return key ? rememberedByPath.value[key] : undefined
+  }
+
   let tabsLoaded = false
 
   async function loadTabs(force = false) {
     if (tabsLoaded && !force) return
+
+    await loadRememberedPasswords()
 
     const saved = (await store.get<WorkspaceTab[]>('workspaceTabs')) ?? []
     const savedActive = (await store.get<string | null>('activeWorkspaceId')) ?? null
@@ -151,6 +204,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         await useSettingsStore().clearLegacyGlobalCrypto()
       }
       tabsLoaded = true
+      await syncAllTabsCryptoFromVault()
       return
     }
 
@@ -178,15 +232,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       await useSettingsStore().clearLegacyGlobalCrypto()
     }
     tabsLoaded = true
+    await syncAllTabsCryptoFromVault()
   }
 
   async function restoreLast() {
     await loadTabs(true)
-    if (activeTab.value?.path?.trim()) {
+    const path = activeTab.value?.path?.trim() ?? ''
+    if (path) {
       try {
-        await loadRoot(activeTab.value.path)
-      } catch {
-        /* ignore missing path */
+        await loadRoot(path)
+      } catch (e) {
+        console.warn('restore last workspace failed', e)
       }
     } else if (activeTab.value) {
       clearView()
@@ -227,6 +283,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function cacheTabPassword(tabId: string, password: string) {
     tabCryptoPasswords.set(tabId, password)
     unlockedTabIds.value = { ...unlockedTabIds.value, [tabId]: true }
+    const tab = tabs.value.find((t) => t.id === tabId)
+    if (tab?.path?.trim()) {
+      void rememberPathPassword(tab.path, password)
+    }
   }
 
   function clearCachedTabPassword(tabId: string) {
@@ -241,6 +301,59 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     pendingCryptoUnlockTabId.value = null
   }
 
+  /** Sync password-verify from workspace `.nw-crypto.json` ↔ tab settings. */
+  async function syncTabCryptoFromVault(tab: WorkspaceTab): Promise<void> {
+    if (!tab.path?.trim()) return
+    try {
+      const vault = await api.sync.vaultGetVerify(tab.path)
+      if (vault?.salt && vault?.hash) {
+        if (tab.cryptoSalt !== vault.salt || tab.cryptoHash !== vault.hash) {
+          tab.cryptoSalt = vault.salt
+          tab.cryptoHash = vault.hash
+          // Replace slot so Tab 栏 / 设置里的「已设置」立刻刷新（不必先切换 Tab）
+          const idx = tabs.value.findIndex((t) => t.id === tab.id)
+          if (idx >= 0) {
+            tabs.value[idx] = { ...tabs.value[idx], cryptoSalt: vault.salt, cryptoHash: vault.hash }
+          }
+          await persistTabs()
+        }
+        return
+      }
+      // Tab has verify but vault folder does not → write it into the folder
+      if (tabHasOwnCrypto(tab)) {
+        await api.sync.vaultSetVerify(tab.path, tab.cryptoSalt!, tab.cryptoHash!)
+      }
+    } catch (e) {
+      console.warn('sync tab crypto from vault failed', e)
+    }
+  }
+
+  /** Sync every bound tab from its folder — so crypto badges show without switching. */
+  async function syncAllTabsCryptoFromVault(): Promise<void> {
+    const list = tabs.value.filter((t) => t.path?.trim())
+    if (!list.length) return
+    await Promise.all(list.map((t) => syncTabCryptoFromVault(t)))
+    // Force a new array identity so Tab 栏在首次加载就刷新「密」标记
+    tabs.value = tabs.value.map((t) => ({ ...t }))
+  }
+
+  async function persistTabCryptoVerify(tab: WorkspaceTab, salt: string, hash: string) {
+    tab.cryptoSalt = salt
+    tab.cryptoHash = hash
+    const idx = tabs.value.findIndex((t) => t.id === tab.id)
+    if (idx >= 0) {
+      tabs.value[idx] = { ...tabs.value[idx], cryptoSalt: salt, cryptoHash: hash }
+    }
+    await persistTabs()
+    if (tab.path.trim()) {
+      try {
+        await api.sync.vaultSetVerify(tab.path, salt, hash)
+      } catch (e) {
+        console.warn('vault set verify failed', e)
+      }
+    }
+  }
+
   /**
    * Bind Rust crypto session to the active tab's password.
    * Returns false when the tab needs unlock or first-time password setup.
@@ -251,6 +364,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       pendingCryptoUnlockTabId.value = null
       return true
     }
+    await syncTabCryptoFromVault(tab)
     if (!tabHasOwnCrypto(tab)) {
       // Must set a per-tab password before encrypting notes
       pendingCryptoUnlockTabId.value = tab.id
@@ -261,7 +375,21 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       }
       return false
     }
-    const cached = tabCryptoPasswords.get(tab.id)
+    let cached = tabCryptoPasswords.get(tab.id)
+    if (!cached) {
+      const remembered = rememberedPasswordFor(tab.path)
+      if (remembered) {
+        const ok = await api.lock.verify(remembered, tab.cryptoSalt!, tab.cryptoHash!)
+        if (ok) {
+          cached = remembered
+          tabCryptoPasswords.set(tab.id, remembered)
+          unlockedTabIds.value = { ...unlockedTabIds.value, [tab.id]: true }
+        } else {
+          // Stale remembered password — drop it
+          await forgetPathPassword(tab.path)
+        }
+      }
+    }
     if (cached) {
       await api.lock.sessionSet(cached)
       pendingCryptoUnlockTabId.value = null
@@ -278,9 +406,26 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function unlockTabCrypto(tabId: string, password: string): Promise<boolean> {
     const tab = tabs.value.find((t) => t.id === tabId)
-    if (!tab || !tabHasOwnCrypto(tab)) return false
-    const ok = await api.lock.verify(password, tab.cryptoSalt!, tab.cryptoHash!)
+    if (!tab) return false
+    if (tab.path.trim()) {
+      await syncTabCryptoFromVault(tab)
+    }
+
+    let ok = false
+    if (tabHasOwnCrypto(tab)) {
+      ok = await api.lock.verify(password, tab.cryptoSalt!, tab.cryptoHash!)
+    }
+    // Fallback: prove against vault files / vault verify (other PC / lost settings)
+    if (!ok && tab.path.trim()) {
+      ok = await api.sync.vaultTryUnlock(tab.path, password)
+      if (ok) {
+        // Write/repair verify into folder so other PCs unlock with the same password
+        const made = await api.lock.hash(password)
+        await persistTabCryptoVerify(tab, made.salt, made.hash)
+      }
+    }
     if (!ok) return false
+
     cacheTabPassword(tabId, password)
     await api.lock.sessionSet(password)
     if (pendingCryptoUnlockTabId.value === tabId) {
@@ -295,10 +440,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function verifyTabCryptoPassword(tabId: string, password: string): Promise<boolean> {
     const tab = tabs.value.find((t) => t.id === tabId)
     if (!tab) return false
+    if (tab.path.trim()) {
+      await syncTabCryptoFromVault(tab)
+    }
     if (tabHasOwnCrypto(tab)) {
       return api.lock.verify(password, tab.cryptoSalt!, tab.cryptoHash!)
     }
-    // First-time setup on this tab: current password is whatever was used before (optional)
+    if (tab.path.trim()) {
+      return api.sync.vaultTryUnlock(tab.path, password)
+    }
     return [...password].length >= 4
   }
 
@@ -310,13 +460,23 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const tab = tabs.value.find((t) => t.id === tabId)
     if (!tab) throw new Error('工作区不存在')
 
+    if (tab.path.trim()) {
+      await syncTabCryptoFromVault(tab)
+    }
+
     const firstTime = !tabHasOwnCrypto(tab)
     if (!firstTime) {
       const ok = await api.lock.verify(current, tab.cryptoSalt!, tab.cryptoHash!)
       if (!ok) throw new Error('当前加密密码不正确')
       await api.lock.sessionSet(current)
     } else if (current) {
-      await api.lock.sessionSet(current)
+      // Prove current password can open existing encrypted notes
+      if (tab.path.trim()) {
+        const ok = await api.sync.vaultTryUnlock(tab.path, current)
+        if (!ok) throw new Error('原加密密码不正确，无法解密现有笔记')
+      } else {
+        await api.lock.sessionSet(current)
+      }
     } else if (!(await api.lock.sessionReady())) {
       await api.lock.sessionSet(next)
     }
@@ -325,6 +485,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (!(await api.lock.sessionReady())) {
         await api.lock.sessionSet(next)
       } else {
+        // Avoid needless rekey when first-time setup with empty current on empty vault
+        // still rekey to bind password + rotate salt consistently
         await api.sync.rekeyWorkspace(tab.path, next)
       }
     } else {
@@ -332,24 +494,43 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
 
     const made = await api.lock.hash(next)
-    tab.cryptoSalt = made.salt
-    tab.cryptoHash = made.hash
     cacheTabPassword(tabId, next)
     pendingCryptoUnlockTabId.value = null
-    await persistTabs()
+    await persistTabCryptoVerify(tab, made.salt, made.hash)
 
     if (activeId.value === tabId && tab.path.trim()) {
       await loadRoot(tab.path, { skipCryptoBind: true })
     }
   }
 
-  /** Remove this tab's crypto config (must set again before reading encrypted notes). */
-  async function clearTabOwnCrypto(tabId: string) {
+  /** Remove this tab's crypto config after verifying the current password. */
+  async function clearTabOwnCrypto(tabId: string, password: string) {
+    if ([...password].length < 4) throw new Error('请输入当前加密密码')
     const tab = tabs.value.find((t) => t.id === tabId)
-    if (!tab) return
+    if (!tab) throw new Error('工作区不存在')
+    if (!tabHasOwnCrypto(tab)) throw new Error('此工作区尚未设置加密密码')
+
+    if (tab.path.trim()) {
+      await syncTabCryptoFromVault(tab)
+    }
+
+    let ok = await api.lock.verify(password, tab.cryptoSalt!, tab.cryptoHash!)
+    if (!ok && tab.path.trim()) {
+      ok = await api.sync.vaultTryUnlock(tab.path, password)
+    }
+    if (!ok) throw new Error('当前加密密码不正确')
+
     tab.cryptoSalt = undefined
     tab.cryptoHash = undefined
     clearCachedTabPassword(tabId)
+    if (tab.path.trim()) {
+      await forgetPathPassword(tab.path)
+      try {
+        await api.sync.vaultClearVerify(tab.path)
+      } catch (e) {
+        console.warn('vault clear verify failed', e)
+      }
+    }
     if (activeId.value === tabId && tab.path.trim()) {
       pendingCryptoUnlockTabId.value = tabId
       try {
@@ -361,6 +542,25 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       pendingCryptoUnlockTabId.value = null
     }
     await persistTabs()
+  }
+
+  /** After git pull: reload crypto verify from folder; re-prompt unlock if password binding changed. */
+  async function afterRemoteSync() {
+    const tab = activeTab.value
+    if (!tab?.path?.trim()) return
+    const before = `${tab.cryptoSalt ?? ''}:${tab.cryptoHash ?? ''}`
+    await syncTabCryptoFromVault(tab)
+    const after = `${tab.cryptoSalt ?? ''}:${tab.cryptoHash ?? ''}`
+    if (before !== after) {
+      clearCachedTabPassword(tab.id)
+      try {
+        await api.lock.sessionClear()
+      } catch {
+        /* ignore */
+      }
+    }
+    await bindActiveCryptoSession()
+    await refresh()
   }
 
   async function sealCopiedNotes() {
@@ -470,6 +670,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     activeId.value = id
     await persistTabs()
     await loadRoot(path)
+    // Re-fetch tab — loadRoot/sync may replace the array slot
+    const latest = tabs.value.find((t) => t.id === id) ?? tab
+    await syncTabCryptoFromVault(latest)
+    const after = tabs.value.find((t) => t.id === id) ?? latest
+    if (!tabHasOwnCrypto(after)) {
+      pendingCryptoUnlockTabId.value = id
+      try {
+        await api.lock.sessionClear()
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   /** Open path in its own tab (independent git project) */
@@ -498,12 +710,24 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     activeId.value = tab.id
     await persistTabs()
     await loadRoot(path)
+    const latest = tabs.value.find((t) => t.id === tab.id) ?? tab
+    await syncTabCryptoFromVault(latest)
+    const after = tabs.value.find((t) => t.id === tab.id) ?? latest
+    if (!tabHasOwnCrypto(after)) {
+      pendingCryptoUnlockTabId.value = tab.id
+      try {
+        await api.lock.sessionClear()
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   async function switchTab(id: string) {
-    if (id === activeId.value) return
     const tab = tabs.value.find((t) => t.id === id)
     if (!tab) return
+    const same = id === activeId.value
+    if (same && tree.value.length) return
     activeId.value = id
     await persistTabs()
     await loadRoot(tab.path)
@@ -619,6 +843,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     suppressFsWatch,
     loadTabs,
     bindActiveCryptoSession,
+    syncTabCryptoFromVault,
+    syncAllTabsCryptoFromVault,
     dismissPendingCrypto,
     unlockTabCrypto,
     setTabCryptoPassword,
@@ -626,5 +852,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     verifyTabCryptoPassword,
     seedSharedCryptoFromUnlock,
     cacheTabPassword,
+    afterRemoteSync,
   }
 })

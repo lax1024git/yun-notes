@@ -15,11 +15,20 @@ const visibleChanges = computed(() => {
   return changes.filter((c) => {
     const p = c.path.replace(/\\/g, '/')
     const base = p.split('/').pop() || p
+    // Keep .nw-crypto.json visible — required for multi-PC password unlock
+    if (base === '.nw-crypto.json') return true
     if (base.startsWith('.')) return false
-    if (base === '.nw-crypto.json' || p.includes('.nw-crypto.json')) return false
     return true
   })
 })
+
+function changeLabel(path: string): string {
+  const p = path.replace(/\\/g, '/')
+  if (p.endsWith('.nw-crypto.json') || p === '.nw-crypto.json') {
+    return '加密配置 (.nw-crypto.json)'
+  }
+  return path
+}
 
 watch(
   () => workspace.root,
@@ -86,7 +95,9 @@ function statusColor(status: string) {
   <div class="stack">
     <h3>Git</h3>
     <p class="muted tip">
-      笔记在磁盘上为密文；编辑器打开时解密。Git 推送/拉取的也是密文。
+      多机共用：各电脑打开同一 Git 仓库，使用<strong>相同的工作区加密密码</strong>。
+      编辑前先「拉取」，改完后「提交」并「推送」。请务必把
+      <code>.nw-crypto.json</code>（加密配置）一并提交。
     </p>
 
     <template v-if="!workspace.root">
@@ -105,7 +116,7 @@ function statusColor(status: string) {
           :key="c.path + c.status"
           :style="{ color: statusColor(c.status) }"
         >
-          {{ c.status }} · {{ c.path }}
+          {{ c.status }} · {{ changeLabel(c.path) }}
         </li>
         <li v-if="!visibleChanges.length" class="muted">无变更</li>
       </ul>

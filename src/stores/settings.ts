@@ -86,13 +86,19 @@ export const useSettingsStore = defineStore('settings', () => {
     await persistLock()
   }
 
+  /** Check the start lock without opening the main UI (so workspace can load first). */
+  async function verifyLockPassword(password: string): Promise<boolean> {
+    if (!lockEnabled.value || !lockSalt.value || !lockHash.value) return true
+    return api.lock.verify(password, lockSalt.value, lockHash.value)
+  }
+
   /** Unlock app UI only — does not set file-encryption session. */
   async function unlock(password: string): Promise<boolean> {
     if (!lockEnabled.value || !lockSalt.value || !lockHash.value) {
       unlocked.value = true
       return true
     }
-    const ok = await api.lock.verify(password, lockSalt.value, lockHash.value)
+    const ok = await verifyLockPassword(password)
     if (!ok) return false
     unlocked.value = true
     return true
@@ -159,6 +165,7 @@ export const useSettingsStore = defineStore('settings', () => {
     enableLock,
     changeLockPassword,
     disableLock,
+    verifyLockPassword,
     unlock,
     clearLegacyGlobalCrypto,
   }

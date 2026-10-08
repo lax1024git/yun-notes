@@ -118,11 +118,12 @@ export const useGitStore = defineStore('git', () => {
   async function pull() {
     const toast = useToastStore()
     const settings = useSettingsStore()
-    if (!(await ensureCryptoSession())) return
+    const workspace = useWorkspaceStore()
+    // Pull only syncs ciphertext — unlock not required (helpful on a new PC)
     const root = requireRoot()
     try {
       await api.git.pull(root, settings.giteeToken || null)
-      toast.success('拉取成功（密文已同步，打开时解密显示）')
+      toast.success('拉取成功（密文已同步）')
       try {
         const { sendNotification } = await import('@tauri-apps/plugin-notification')
         await sendNotification({ title: 'Lax1024 Tools', body: 'Git 拉取完成' })
@@ -130,7 +131,7 @@ export const useGitStore = defineStore('git', () => {
         /* ignore */
       }
       await refresh(root)
-      await useWorkspaceStore().refresh()
+      await workspace.afterRemoteSync()
     } catch (e) {
       toast.error(errorMessage(e))
       throw e
