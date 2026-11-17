@@ -110,6 +110,7 @@ async function onCopy() {
 }
 .editor {
   width: 100%;
+  min-width: 0;
   min-height: 280px;
   height: 36vh;
   max-height: 420px;
@@ -122,6 +123,10 @@ async function onCopy() {
   border-radius: var(--radius);
   background: var(--editor-bg);
   outline: none;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .editor:focus {
   border-color: var(--accent);

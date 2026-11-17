@@ -95,6 +95,7 @@ onUnmounted(() => {
 <template>
   <textarea
     class="editor"
+    wrap="soft"
     :value="draft"
     :disabled="!workspace.currentFile || editor.loading"
     placeholder="选择或新建 Markdown 文件…"
@@ -107,8 +108,11 @@ onUnmounted(() => {
 
 <style scoped>
 .editor {
+  display: block;
   width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
   resize: none;
   border: none;
   border-radius: 0;
@@ -118,5 +122,9 @@ onUnmounted(() => {
   font-size: 0.92rem;
   line-height: 1.6;
   outline: none;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 </style>

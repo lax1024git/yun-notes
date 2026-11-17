@@ -174,11 +174,15 @@ async function exportDecrypted() {
   border-width: 0 2px 2px 0;
 }
 .editors.split {
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 .editors.edit,
 .editors.preview {
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
+}
+.editors > * {
+  min-width: 0;
+  min-height: 0;
 }
 .editors.split > :first-child {
   border-right: 1px solid var(--border);
