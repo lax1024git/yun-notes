@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, provide, ref } from 'vue'
 import { open as pickDirectory } from '@tauri-apps/plugin-dialog'
 import { api, errorMessage } from '../api/tauri'
 import { useEditorStore } from '../stores/editor'
@@ -19,6 +19,22 @@ const workspace = useWorkspaceStore()
 const editor = useEditorStore()
 const toast = useToastStore()
 const drag = createTreeDragState()
+
+const expanded = ref<Record<string, true>>({})
+const expand = {
+  isOpen: (path: string) => !!expanded.value[path],
+  toggle(path: string) {
+    const next = { ...expanded.value }
+    if (next[path]) delete next[path]
+    else next[path] = true
+    expanded.value = next
+  },
+  open(path: string) {
+    if (!path || expanded.value[path]) return
+    expanded.value = { ...expanded.value, [path]: true }
+  },
+}
+provide('nw-tree-expand', expand)
 
 const rootDropActive = computed(() => drag.active && drag.overDir === '__root__')
 
@@ -144,6 +160,7 @@ async function createInDir(dir: string, kind: 'file' | 'dir') {
     try {
       const path = joinPath(dir, name)
       await api.fs.createFile(path)
+      expand.open(dir)
       await workspace.refresh()
       toast.success(`已创建：${name}`)
     } catch (e) {
@@ -155,6 +172,7 @@ async function createInDir(dir: string, kind: 'file' | 'dir') {
   if (!name) return
   try {
     await api.fs.createDir(joinPath(dir, name))
+    expand.open(dir)
     await workspace.refresh()
     toast.success(`已创建目录：${name}`)
   } catch (e) {

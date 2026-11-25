@@ -1,7 +1,7 @@
 use crate::crypto::{
-    decrypt_bytes, encrypt_bytes, key_for_vault, require_session_password, SharedCryptoSession,
-    CRYPTO_META_FILE,
+    decrypt_bytes, encrypt_bytes, key_for_vault_cached, SharedCryptoSession, CRYPTO_META_FILE,
 };
+use crate::skip::{skip_entry_name, walk_keep};
 use crate::error::{AppError, AppResult};
 use serde::Serialize;
 use std::fs;
@@ -42,10 +42,6 @@ fn is_note_file(path: &Path) -> bool {
     }
 }
 
-fn is_hidden_name(name: &str) -> bool {
-    name.starts_with('.')
-}
-
 /// Detect Lax1024 Tools ciphertext (magic `NW1`).
 pub fn is_encrypted_bytes(data: &[u8]) -> bool {
     data.len() >= 3 && &data[..3] == b"NW1"
@@ -77,14 +73,13 @@ fn workspace_root_for(path: &Path) -> Option<PathBuf> {
 }
 
 fn key_for_path(session: &SharedCryptoSession, file: &Path) -> AppResult<[u8; 32]> {
-    let password = require_session_password(session)?;
     let root = workspace_root_for(file).ok_or_else(|| {
         AppError::new(
             "CRYPTO_ERROR",
             "找不到工作区加密配置，请先打开并初始化工作区",
         )
     })?;
-    key_for_vault(&password, &root)
+    key_for_vault_cached(session, &root)
 }
 
 fn to_epoch(mtime: SystemTime) -> Option<i64> {
@@ -113,7 +108,7 @@ fn scan_children(dir: &Path) -> AppResult<Vec<FileNode>> {
         let entry = entry?;
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if is_hidden_name(&name) {
+        if skip_entry_name(&name) {
             continue;
         }
         // Legacy dual-layout: hide leftover work/ folder when browsing vault-as-root parent
@@ -332,8 +327,7 @@ pub fn search_files(
             format!("path not found: {root}"),
         ));
     }
-    let password = require_session_password(&session)?;
-    let key = key_for_vault(&password, &root_path)?;
+    let key = key_for_vault_cached(&session, &root_path)?;
     let kw_lower = kw.to_lowercase();
     let mut hits = Vec::new();
 
@@ -345,7 +339,7 @@ pub fn search_files(
             }
             e.file_name()
                 .to_str()
-                .map(|n| !is_hidden_name(n))
+                .map(|n| walk_keep(&root_path, e.path(), n))
                 .unwrap_or(true)
         })
         .filter_map(|e| e.ok())
@@ -385,8 +379,7 @@ pub fn seal_plaintext_notes(
     session: tauri::State<'_, SharedCryptoSession>,
 ) -> AppResult<u32> {
     let root_path = PathBuf::from(&root);
-    let password = require_session_password(&session)?;
-    let key = key_for_vault(&password, &root_path)?;
+    let key = key_for_vault_cached(&session, &root_path)?;
     let mut count = 0u32;
     for entry in WalkDir::new(&root_path)
         .into_iter()
@@ -396,7 +389,7 @@ pub fn seal_plaintext_notes(
             }
             e.file_name()
                 .to_str()
-                .map(|n| !is_hidden_name(n))
+                .map(|n| walk_keep(&root_path, e.path(), n))
                 .unwrap_or(true)
         })
         .filter_map(|e| e.ok())
@@ -468,8 +461,7 @@ pub fn export_decrypted(
     }
     fs::create_dir_all(&dest_root)?;
 
-    let password = require_session_password(&session)?;
-    let key = key_for_vault(&password, &src_root)?;
+    let key = key_for_vault_cached(&session, &src_root)?;
     let mut count = 0u32;
 
     // Single file
@@ -498,7 +490,7 @@ pub fn export_decrypted(
             }
             e.file_name()
                 .to_str()
-                .map(|n| !is_hidden_name(n))
+                .map(|n| walk_keep(&walk_from, e.path(), n))
                 .unwrap_or(true)
         })
         .filter_map(|e| e.ok())
@@ -551,6 +543,19 @@ mod tests {
         assert_eq!(nodes.len(), 2);
         let md = nodes.iter().find(|n| n.name == "a.md").unwrap();
         assert!(md.is_note);
+    }
+
+    #[test]
+    fn scan_skips_node_modules_and_git() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("node_modules/pkg")).unwrap();
+        fs::write(dir.path().join("node_modules/pkg/x.md"), b"no").unwrap();
+        fs::create_dir_all(dir.path().join(".git/objects")).unwrap();
+        fs::write(dir.path().join(".git/HEAD"), b"ref").unwrap();
+        fs::write(dir.path().join("ok.md"), b"# ok").unwrap();
+        let nodes = scan_dir(dir.path()).unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "ok.md");
     }
 
     #[test]

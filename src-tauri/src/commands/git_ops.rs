@@ -1,5 +1,6 @@
 use crate::crypto::CRYPTO_META_FILE;
 use crate::error::{AppError, AppResult};
+use crate::skip::skip_entry_name;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -39,7 +40,19 @@ fn open_repo(root: &str) -> AppResult<git2::Repository> {
 
 /// Note files on disk must be ciphertext (NW1); skip meta / readme / non-notes.
 fn assert_notes_are_ciphertext(root: &Path) -> AppResult<()> {
-    for entry in walkdir::WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+    for entry in walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| {
+            if e.path() == root {
+                return true;
+            }
+            e.file_name()
+                .to_str()
+                .map(|n| !skip_entry_name(n))
+                .unwrap_or(true)
+        })
+        .filter_map(|e| e.ok())
+    {
         let path = entry.path();
         if !path.is_file() {
             continue;
@@ -53,7 +66,7 @@ fn assert_notes_are_ciphertext(root: &Path) -> AppResult<()> {
             .next()
             .map(|c| c.as_os_str().to_string_lossy().to_string())
             .unwrap_or_default();
-        if first == ".git" || first.starts_with('.') {
+        if skip_entry_name(&first) {
             continue;
         }
         let name = path

@@ -59,15 +59,25 @@ impl CryptoMeta {
 pub struct CryptoSession {
     /// File-encryption password kept only for this process (may differ from app unlock).
     password: Option<String>,
+    /// Argon2 is expensive; reuse the derived key until password/vault changes.
+    derived_key: Option<[u8; KEY_LEN]>,
+    derived_vault: Option<std::path::PathBuf>,
 }
 
 impl CryptoSession {
     pub fn set_password(&mut self, password: String) {
         self.password = Some(password);
+        self.clear_derived();
     }
 
     pub fn clear(&mut self) {
         self.password = None;
+        self.clear_derived();
+    }
+
+    pub fn clear_derived(&mut self) {
+        self.derived_key = None;
+        self.derived_vault = None;
     }
 
     pub fn has_password(&self) -> bool {
@@ -184,6 +194,33 @@ pub fn key_for_vault(password: &str, vault: &Path) -> AppResult<[u8; KEY_LEN]> {
     derive_key(password, &salt)
 }
 
+/// Same as `key_for_vault`, but caches the Argon2 result on the session.
+pub fn key_for_vault_cached(
+    session: &SharedCryptoSession,
+    vault: &Path,
+) -> AppResult<[u8; KEY_LEN]> {
+    let password = require_session_password(session)?;
+    let ident = vault.canonicalize().unwrap_or_else(|_| vault.to_path_buf());
+    {
+        let guard = session
+            .lock()
+            .map_err(|_| AppError::new("INTERNAL", "crypto session lock poisoned"))?;
+        if let (Some(key), Some(cached_vault)) = (guard.derived_key, guard.derived_vault.as_ref()) {
+            if cached_vault == &ident {
+                return Ok(key);
+            }
+        }
+    }
+    let key = key_for_vault(&password, vault)?;
+    if let Ok(mut guard) = session.lock() {
+        if guard.password.as_deref() == Some(password.as_str()) {
+            guard.derived_key = Some(key);
+            guard.derived_vault = Some(ident);
+        }
+    }
+    Ok(key)
+}
+
 /// Replace vault salt and return a key derived from the new password.
 /// Preserves password-verify fields so they can be updated by the caller.
 pub fn rotate_meta_and_key(password: &str, vault: &Path) -> AppResult<[u8; KEY_LEN]> {
@@ -234,5 +271,17 @@ mod tests {
         let key2 = derive_key("b", b"0123456789abcdef").unwrap();
         let enc = encrypt_bytes(&key1, b"data").unwrap();
         assert!(decrypt_bytes(&key2, &enc).is_err());
+    }
+
+    #[test]
+    fn cached_key_matches_fresh_derive() {
+        let dir = tempfile::tempdir().unwrap();
+        let session: SharedCryptoSession = Mutex::new(CryptoSession::default());
+        session.lock().unwrap().set_password("secret-password".into());
+        let a = key_for_vault_cached(&session, dir.path()).unwrap();
+        let b = key_for_vault_cached(&session, dir.path()).unwrap();
+        let fresh = key_for_vault("secret-password", dir.path()).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a, fresh);
     }
 }

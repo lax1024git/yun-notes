@@ -1,19 +1,20 @@
-//! Watch the plaintext `work/` directory and emit events when files change externally.
+//! Watch the workspace directory and emit events when files change externally.
 
 use crate::error::{AppError, AppResult};
+use crate::skip::skip_fs_path;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, State};
 
 pub const WORK_FS_CHANGED_EVENT: &str = "work-fs-changed";
+const DEBOUNCE: Duration = Duration::from_millis(800);
 
 pub struct WorkWatchState {
     watcher: Option<RecommendedWatcher>,
     watched: Option<PathBuf>,
-    /// Debounce emit storms from a single copy operation.
-    last_emit: Instant,
 }
 
 impl Default for WorkWatchState {
@@ -21,22 +22,8 @@ impl Default for WorkWatchState {
         Self {
             watcher: None,
             watched: None,
-            last_emit: Instant::now()
-                .checked_sub(Duration::from_secs(10))
-                .unwrap_or_else(Instant::now),
         }
     }
-}
-
-fn should_ignore_path(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .map(|n| {
-            n.starts_with('.')
-                || n.ends_with(".tmp")
-                || n.eq_ignore_ascii_case("vault")
-        })
-        .unwrap_or(false)
 }
 
 fn event_is_interesting(kind: &EventKind) -> bool {
@@ -69,17 +56,14 @@ pub fn watch_work_dir(
         return Ok(());
     }
 
-    // Drop previous watcher
     guard.watcher = None;
     guard.watched = None;
 
     let app_handle = app.clone();
-    let last_emit = std::sync::Arc::new(Mutex::new(
-        Instant::now()
-            .checked_sub(Duration::from_secs(10))
-            .unwrap_or_else(Instant::now),
-    ));
-    let last_emit_cb = last_emit.clone();
+    let pending = Arc::new(AtomicBool::new(false));
+    let last_event = Arc::new(Mutex::new(Instant::now()));
+    let pending_cb = pending.clone();
+    let last_cb = last_event.clone();
 
     let mut watcher = notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
         let Ok(event) = res else {
@@ -88,18 +72,37 @@ pub fn watch_work_dir(
         if !event_is_interesting(&event.kind) {
             return;
         }
-        if event.paths.iter().all(|p| should_ignore_path(p)) {
+        if event.paths.iter().all(|p| skip_fs_path(p)) {
             return;
         }
-        // ~250ms debounce on Rust side
-        if let Ok(mut t) = last_emit_cb.lock() {
-            let now = Instant::now();
-            if now.duration_since(*t) < Duration::from_millis(250) {
-                return;
-            }
-            *t = now;
+        if let Ok(mut t) = last_cb.lock() {
+            *t = Instant::now();
         }
-        let _ = app_handle.emit(WORK_FS_CHANGED_EVENT, ());
+        // Trailing debounce: emit once after events go quiet.
+        if pending_cb
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+        let app_handle = app_handle.clone();
+        let pending_cb = pending_cb.clone();
+        let last_cb = last_cb.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(DEBOUNCE);
+                let quiet = last_cb
+                    .lock()
+                    .ok()
+                    .map(|t| t.elapsed() >= DEBOUNCE)
+                    .unwrap_or(true);
+                if quiet {
+                    pending_cb.store(false, Ordering::SeqCst);
+                    let _ = app_handle.emit(WORK_FS_CHANGED_EVENT, ());
+                    break;
+                }
+            }
+        });
     })
     .map_err(|e| AppError::new("IO_ERROR", format!("watch start failed: {e}")))?;
 
@@ -109,9 +112,6 @@ pub fn watch_work_dir(
 
     guard.watcher = Some(watcher);
     guard.watched = Some(path);
-    guard.last_emit = Instant::now()
-        .checked_sub(Duration::from_secs(10))
-        .unwrap_or_else(Instant::now);
     Ok(())
 }
 

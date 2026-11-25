@@ -249,9 +249,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  const refreshDebounced = debounce(() => {
+  const onFsChanged = debounce(() => {
     void refresh()
-  }, 400)
+    void sealCopiedNotes()
+  }, 800)
 
   async function startWatching(path: string) {
     try {
@@ -262,8 +263,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       await api.watch.workDir(path)
       unlistenFs = await listen('work-fs-changed', () => {
         if (Date.now() < suppressWatchUntil) return
-        refreshDebounced()
-        void sealCopiedNotes()
+        onFsChanged()
       })
     } catch (e) {
       console.warn('work dir watch failed', e)

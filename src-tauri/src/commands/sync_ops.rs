@@ -4,14 +4,11 @@ use crate::crypto::{
     self, decrypt_bytes, encrypt_bytes, key_for_vault, require_session_password,
     rotate_meta_and_key, SharedCryptoSession,
 };
+use crate::skip::walk_keep;
 use crate::error::{AppError, AppResult};
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
-
-fn is_hidden_name(name: &str) -> bool {
-    name.starts_with('.')
-}
 
 fn is_note_file(path: &Path) -> bool {
     match path
@@ -106,7 +103,7 @@ fn rekey_workspace_inner(
             }
             e.file_name()
                 .to_str()
-                .map(|n| !is_hidden_name(n))
+                .map(|n| walk_keep(&dir, e.path(), n))
                 .unwrap_or(true)
         })
         .filter_map(|e| e.ok())
@@ -271,7 +268,7 @@ pub fn crypto_vault_try_unlock(
             }
             e.file_name()
                 .to_str()
-                .map(|n| !is_hidden_name(n))
+                .map(|n| walk_keep(&dir, e.path(), n))
                 .unwrap_or(true)
         })
         .filter_map(|e| e.ok())

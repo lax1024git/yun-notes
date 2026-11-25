@@ -1,6 +1,7 @@
 mod commands;
 mod crypto;
 mod error;
+mod skip;
 
 use commands::{app_lock, fs_ops, git_ops, gitee_ops, sync_ops, watch_ops};
 use crypto::{CryptoSession, SharedCryptoSession};

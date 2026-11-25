@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, inject } from 'vue'
 import type { FileNode } from '../types'
 import { useEditorStore } from '../stores/editor'
 import { useToastStore } from '../stores/toast'
@@ -19,7 +19,11 @@ const editor = useEditorStore()
 const toast = useToastStore()
 const dragApi = useTreeDragApi()
 const drag = dragApi.state
-const expanded = ref(true)
+const expand = inject('nw-tree-expand', {
+  isOpen: (_path: string) => false,
+  toggle: (_path: string) => {},
+})
+const expanded = computed(() => expand.isOpen(props.node.path))
 
 const isSource = computed(
   () => drag.active && !!drag.fromPath && pathsEqual(drag.fromPath, props.node.path),
@@ -41,7 +45,7 @@ async function onClick(e: MouseEvent) {
     return
   }
   if (props.node.isDir) {
-    expanded.value = !expanded.value
+    expand.toggle(props.node.path)
     return
   }
   if (!props.node.isNote) {
